@@ -9,6 +9,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 - **Automatische Pumpensteuerung** mit Hysterese
 - **Automatischer Druckausgleich** mit Luftpumpe (alle 5 Min. für 10 Sek.)
 - Messung wird während Druckausgleich pausiert
+- **ESP-NOW Datenübertragung** zur Wetterstation (alle 15 Minuten)
 - **RRD-Verlaufsdiagramm** (Round Robin Database) mit 220 Datenpunkten
 - **Visueller Fortschrittsbalken** für Füllstand
 - Serielle Ausgabe für Monitoring
@@ -69,6 +70,20 @@ Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
 - Verhindert Fehlmessungen durch Druckschwankungen
 - Countdown bis zur nächsten Aktivierung wird angezeigt
 
+### ESP-NOW Datenübertragung
+- **Drahtlose Kommunikation** ohne WLAN-Router (direkte ESP-zu-ESP Verbindung)
+- Sendet alle **15 Minuten** automatisch:
+  - Wasserstand in cm
+  - Roher ADC-Wert
+  - Pumpenstatus
+  - Betriebszeit
+- **Reichweite**: bis zu 200m im Freien
+- **Niedriger Stromverbrauch**
+- Status-Anzeige auf Display (OK/FEHLER, Sendezähler)
+- Countdown bis zur nächsten Übertragung
+
+**Setup:** Siehe [ESPNOW_SETUP.md](ESPNOW_SETUP.md) für Konfiguration
+
 ## Kalibrierung
 
 Passe die Werte in `src/main.cpp` an:
@@ -98,6 +113,16 @@ Passe die Werte in `src/main.cpp` an:
 #define AIR_PUMP_INTERVAL 300000  // 5 Minuten zwischen Aktivierungen
 #define AIR_PUMP_DURATION 10000   // 10 Sekunden Laufzeit
 ```
+
+**ESP-NOW Einstellungen:**
+```cpp
+#define ESPNOW_SEND_INTERVAL 900000  // 15 Minuten (in ms)
+
+// MAC-Adresse der Wetterstation anpassen!
+uint8_t weatherStationMAC[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
+```
+
+Siehe [ESPNOW_SETUP.md](ESPNOW_SETUP.md) für vollständige Anleitung.
 
 ## Installation
 
@@ -135,13 +160,15 @@ pio run --target upload
 │                        │  15└──────────────────────╲──    │
 │ Pumpe: AUS             │         ← Ältere   Neue →        │
 │ Luftpumpe: AUS         │                                  │
+│ ESP-NOW: OK #12        │                                  │
 │ EIN: 30cm AUS: 15cm    │                                  │
+│ Nächste ESP-NOW: 14m 23s                                  │
 │ Nächste Luftp.: 4m 23s │                                  │
 └───────────────────────────────────────────────────────────┘
 ```
 
 **Layout:**
-- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, Countdown)
+- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, ESP-NOW, Countdowns)
 - **Rechts**: Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
 
 ## Lizenz

@@ -1,8 +1,24 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <esp_now.h>
+#include <WiFi.h>
 
 // TFT Display initialisieren
 TFT_eSPI tft = TFT_eSPI();
+
+// MAC-Adresse der Wetterstation (muss angepasst werden!)
+// Format: {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
+uint8_t weatherStationMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+// Datenstruktur für ESP-NOW Übertragung
+typedef struct {
+  float waterLevel;      // Wasserstand in cm
+  int adcValue;          // Roher ADC-Wert
+  bool pumpActive;       // Status der Wasserpumpe
+  unsigned long uptime;  // Betriebszeit in Sekunden
+} WaterLevelData;
+
+WaterLevelData dataToSend;
 
 // Drucksensor MPX5050 am GPIO 35 (ADC1 CH7)
 #define PRESSURE_SENSOR_PIN 35
@@ -14,6 +30,9 @@ TFT_eSPI tft = TFT_eSPI();
 #define AIR_PUMP_PIN 16
 #define AIR_PUMP_INTERVAL 300000  // 5 Minuten in ms
 #define AIR_PUMP_DURATION 10000   // 10 Sekunden in ms
+
+// ESP-NOW Einstellungen
+#define ESPNOW_SEND_INTERVAL 900000  // 15 Minuten in ms (900.000 ms)
 
 // Kalibrierungswerte (anpassen nach Bedarf)
 #define ADC_MIN 0          // ADC-Wert bei 0 cm Wasserstand
@@ -44,6 +63,92 @@ unsigned long lastSampleTime = 0; // Zeitpunkt der letzten Messung
 unsigned long lastAirPumpTime = 0;  // Letzter Start der Luftpumpe
 bool airPumpActive = false;          // Status der Luftpumpe
 unsigned long airPumpStartTime = 0;  // Startzeit der aktuellen Luftpumpen-Phase
+
+// ESP-NOW Variablen
+unsigned long lastESPNowSend = 0;    // Zeitpunkt der letzten ESP-NOW Übertragung
+bool espnowInitialized = false;      // ESP-NOW Initialisierungsstatus
+int espnowSendCount = 0;             // Anzahl gesendeter Nachrichten
+bool lastSendSuccess = false;        // Status der letzten Übertragung
+
+// ESP-NOW Callback-Funktion (wird nach dem Senden aufgerufen)
+void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  if (status == ESP_NOW_SEND_SUCCESS) {
+    lastSendSuccess = true;
+    Serial.println("ESP-NOW: Daten erfolgreich gesendet!");
+  } else {
+    lastSendSuccess = false;
+    Serial.println("ESP-NOW: Fehler beim Senden!");
+  }
+}
+
+// ESP-NOW initialisieren
+void initESPNow() {
+  // WiFi im Station-Modus starten (für ESP-NOW erforderlich)
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  
+  Serial.print("ESP32 MAC-Adresse: ");
+  Serial.println(WiFi.macAddress());
+  
+  // ESP-NOW initialisieren
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Fehler beim Initialisieren von ESP-NOW!");
+    espnowInitialized = false;
+    return;
+  }
+  
+  Serial.println("ESP-NOW erfolgreich initialisiert");
+  
+  // Callback-Funktion registrieren
+  esp_now_register_send_cb(OnDataSent);
+  
+  // Peer (Wetterstation) hinzufügen
+  esp_now_peer_info_t peerInfo;
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, weatherStationMAC, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Fehler beim Hinzufügen des Peers!");
+    espnowInitialized = false;
+    return;
+  }
+  
+  Serial.print("Peer (Wetterstation) hinzugefügt: ");
+  for (int i = 0; i < 6; i++) {
+    Serial.printf("%02X", weatherStationMAC[i]);
+    if (i < 5) Serial.print(":");
+  }
+  Serial.println();
+  
+  espnowInitialized = true;
+}
+
+// Daten via ESP-NOW senden
+void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
+  if (!espnowInitialized) {
+    Serial.println("ESP-NOW nicht initialisiert!");
+    return;
+  }
+  
+  // Datenstruktur füllen
+  dataToSend.waterLevel = waterLevel;
+  dataToSend.adcValue = adcValue;
+  dataToSend.pumpActive = pumpActive;
+  dataToSend.uptime = millis() / 1000;
+  
+  // Daten senden
+  esp_err_t result = esp_now_send(weatherStationMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
+  
+  if (result == ESP_OK) {
+    espnowSendCount++;
+    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s)\n", 
+                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS");
+  } else {
+    Serial.println("ESP-NOW: Fehler beim Senden!");
+  }
+}
 
 // Funktion zum Zeichnen des Verlaufs-Graphen
 void drawGraph() {
@@ -113,6 +218,9 @@ void setup() {
   pinMode(AIR_PUMP_PIN, OUTPUT);
   digitalWrite(AIR_PUMP_PIN, LOW); // Luftpumpe initial AUS
   
+  // ESP-NOW initialisieren
+  initESPNow();
+  
   // Display initialisieren
   tft.init();
   tft.setRotation(1); // Landscape-Modus (0-3 möglich)
@@ -149,6 +257,9 @@ void setup() {
   
   tft.setCursor(10, 240);
   tft.println("Luftpumpe:");
+  
+  tft.setCursor(10, 270);
+  tft.println("ESP-NOW:");
   
   // Initialen Graph zeichnen
   drawGraph();
@@ -238,6 +349,12 @@ void loop() {
     drawGraph();
   }
   
+  // ESP-NOW Daten senden (alle 15 Minuten)
+  if (espnowInitialized && (currentTime - lastESPNowSend >= ESPNOW_SEND_INTERVAL)) {
+    lastESPNowSend = currentTime;
+    sendWaterLevelData(waterLevelCm, adcValue, pumpActive);
+  }
+  
   // ADC-Wert anzeigen (linke Seite, kompakt)
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(2);
@@ -273,16 +390,42 @@ void loop() {
   // Schwellwerte anzeigen
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(1);
-  tft.setCursor(10, 275);
+  tft.setCursor(10, 255);
   tft.printf("EIN: %.0fcm AUS: %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
+  
+  // ESP-NOW Status anzeigen
+  tft.setTextSize(2);
+  tft.fillRect(130, 270, 110, 25, TFT_BLACK);
+  tft.setCursor(130, 270);
+  if (espnowInitialized) {
+    if (lastSendSuccess) {
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.printf("OK #%d", espnowSendCount);
+    } else {
+      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+      tft.printf("OK #%d", espnowSendCount);
+    }
+  } else {
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("FEHLER");
+  }
+  
+  // Nächste ESP-NOW Übertragung anzeigen
+  unsigned long nextESPNow = ESPNOW_SEND_INTERVAL - (currentTime - lastESPNowSend);
+  int minutesLeftESPNow = nextESPNow / 60000;
+  int secondsLeftESPNow = (nextESPNow % 60000) / 1000;
+  tft.setTextSize(1);
+  tft.setCursor(10, 300);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.printf("Naechste ESP-NOW: %dm %ds  ", minutesLeftESPNow, secondsLeftESPNow);
   
   // Nächste Luftpumpen-Aktivierung anzeigen
   unsigned long nextAirPump = AIR_PUMP_INTERVAL - (currentTime - lastAirPumpTime);
   int minutesLeft = nextAirPump / 60000;
   int secondsLeft = (nextAirPump % 60000) / 1000;
-  tft.setCursor(10, 290);
+  tft.setCursor(10, 310);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.printf("Naechste Luftp.: %dm %ds", minutesLeft, secondsLeft);
+  tft.printf("Naechste Luftp.: %dm %ds  ", minutesLeft, secondsLeft);
   
   // Serielle Ausgabe
   Serial.printf("ADC: %d | Wasserstand: %.1f cm", adcValue, waterLevelCm);
