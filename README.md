@@ -7,6 +7,8 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 - **Wasserstandsmessung** mit MPX5050 Drucksensor
 - **TFT-Display** (480x320, ST7796) zur Echtzeitanzeige
 - **Automatische Pumpensteuerung** mit Hysterese
+- **Automatischer Druckausgleich** mit Luftpumpe (alle 5 Min. für 10 Sek.)
+- Messung wird während Druckausgleich pausiert
 - **RRD-Verlaufsdiagramm** (Round Robin Database) mit 220 Datenpunkten
 - **Visueller Fortschrittsbalken** für Füllstand
 - Serielle Ausgabe für Monitoring
@@ -33,6 +35,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 | TFT BL | GPIO 27 | Backlight |
 | Drucksensor | GPIO 35 | ADC1 CH7 |
 | Pumpen-MOSFET | GPIO 17 | Digital Output |
+| Luftpumpen-MOSFET | GPIO 16 | Digital Output |
 
 ## Funktionsweise
 
@@ -59,6 +62,13 @@ Dies verhindert häufiges Ein-/Ausschalten.
 
 Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
 
+### Automatischer Druckausgleich
+- **Luftpumpe** läuft automatisch alle **5 Minuten** für **10 Sekunden**
+- Hält den Druck im Messrohr konstant
+- **Messung wird pausiert** während die Luftpumpe läuft
+- Verhindert Fehlmessungen durch Druckschwankungen
+- Countdown bis zur nächsten Aktivierung wird angezeigt
+
 ## Kalibrierung
 
 Passe die Werte in `src/main.cpp` an:
@@ -82,6 +92,12 @@ Passe die Werte in `src/main.cpp` an:
 
 **Zeitspanne des Graphen:**
 - 220 Punkte × 5 Sekunden = 1100 Sekunden ≈ **18 Minuten Historie**
+
+**Luftpumpen-Einstellungen:**
+```cpp
+#define AIR_PUMP_INTERVAL 300000  // 5 Minuten zwischen Aktivierungen
+#define AIR_PUMP_DURATION 10000   // 10 Sekunden Laufzeit
+```
 
 ## Installation
 
@@ -118,12 +134,14 @@ pio run --target upload
 │ [████████░░░]          │    │╱                ╲           │
 │                        │  15└──────────────────────╲──    │
 │ Pumpe: AUS             │         ← Ältere   Neue →        │
+│ Luftpumpe: AUS         │                                  │
 │ EIN: 30cm AUS: 15cm    │                                  │
+│ Nächste Luftp.: 4m 23s │                                  │
 └───────────────────────────────────────────────────────────┘
 ```
 
 **Layout:**
-- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Fortschrittsbalken)
+- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, Countdown)
 - **Rechts**: Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
 
 ## Lizenz

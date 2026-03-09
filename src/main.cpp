@@ -10,6 +10,11 @@ TFT_eSPI tft = TFT_eSPI();
 // MOSFET für Pumpenrelais am GPIO 17
 #define PUMP_MOSFET_PIN 17
 
+// MOSFET für Luftpumpe (Druckausgleich) am GPIO 16
+#define AIR_PUMP_PIN 16
+#define AIR_PUMP_INTERVAL 300000  // 5 Minuten in ms
+#define AIR_PUMP_DURATION 10000   // 10 Sekunden in ms
+
 // Kalibrierungswerte (anpassen nach Bedarf)
 #define ADC_MIN 0          // ADC-Wert bei 0 cm Wasserstand
 #define ADC_MAX 4095       // ADC-Wert bei maximalem Wasserstand
@@ -34,6 +39,11 @@ bool pumpActive = false;
 float graphData[GRAPH_SAMPLES]; // Ringpuffer für Messwerte
 int graphIndex = 0;              // Aktueller Index im Ringpuffer
 unsigned long lastSampleTime = 0; // Zeitpunkt der letzten Messung
+
+// Luftpumpen-Variablen
+unsigned long lastAirPumpTime = 0;  // Letzter Start der Luftpumpe
+bool airPumpActive = false;          // Status der Luftpumpe
+unsigned long airPumpStartTime = 0;  // Startzeit der aktuellen Luftpumpen-Phase
 
 // Funktion zum Zeichnen des Verlaufs-Graphen
 void drawGraph() {
@@ -99,6 +109,10 @@ void setup() {
   pinMode(PUMP_MOSFET_PIN, OUTPUT);
   digitalWrite(PUMP_MOSFET_PIN, LOW); // Pumpe initial AUS
   
+  // Luftpumpen-MOSFET konfigurieren
+  pinMode(AIR_PUMP_PIN, OUTPUT);
+  digitalWrite(AIR_PUMP_PIN, LOW); // Luftpumpe initial AUS
+  
   // Display initialisieren
   tft.init();
   tft.setRotation(1); // Landscape-Modus (0-3 möglich)
@@ -133,6 +147,9 @@ void setup() {
   tft.setCursor(10, 210);
   tft.println("Pumpe:");
   
+  tft.setCursor(10, 240);
+  tft.println("Luftpumpe:");
+  
   // Initialen Graph zeichnen
   drawGraph();
   
@@ -140,6 +157,45 @@ void setup() {
 }
 
 void loop() {
+  unsigned long currentTime = millis();
+  
+  // Luftpumpen-Steuerung (alle 5 Minuten für 10 Sekunden)
+  if (!airPumpActive && (currentTime - lastAirPumpTime >= AIR_PUMP_INTERVAL)) {
+    // Luftpumpe einschalten
+    airPumpActive = true;
+    airPumpStartTime = currentTime;
+    lastAirPumpTime = currentTime;
+    digitalWrite(AIR_PUMP_PIN, HIGH);
+    Serial.println(">>> LUFTPUMPE GESTARTET (Druckausgleich) <<<");
+    
+    // Status auf Display aktualisieren
+    tft.setTextSize(2);
+    tft.fillRect(130, 240, 110, 25, TFT_BLACK);
+    tft.setCursor(130, 240);
+    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+    tft.println("AKTIV");
+  }
+  
+  // Luftpumpe nach 10 Sekunden ausschalten
+  if (airPumpActive && (currentTime - airPumpStartTime >= AIR_PUMP_DURATION)) {
+    airPumpActive = false;
+    digitalWrite(AIR_PUMP_PIN, LOW);
+    Serial.println(">>> LUFTPUMPE GESTOPPT <<<");
+    
+    // Status auf Display aktualisieren
+    tft.setTextSize(2);
+    tft.fillRect(130, 240, 110, 25, TFT_BLACK);
+    tft.setCursor(130, 240);
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    tft.println("AUS");
+  }
+  
+  // Messung überspringen, wenn Luftpumpe aktiv ist
+  if (airPumpActive) {
+    delay(500);
+    return; // Loop beenden und neu starten
+  }
+  
   // ADC-Wert vom Drucksensor lesen (Mittelwert aus 10 Messungen)
   int adcSum = 0;
   for (int i = 0; i < 10; i++) {
@@ -171,7 +227,6 @@ void loop() {
   }
   
   // RRD-Daten aktualisieren (alle 5 Sekunden)
-  unsigned long currentTime = millis();
   if (currentTime - lastSampleTime >= SAMPLE_INTERVAL) {
     lastSampleTime = currentTime;
     
@@ -218,8 +273,16 @@ void loop() {
   // Schwellwerte anzeigen
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(1);
-  tft.setCursor(10, 245);
+  tft.setCursor(10, 275);
   tft.printf("EIN: %.0fcm AUS: %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
+  
+  // Nächste Luftpumpen-Aktivierung anzeigen
+  unsigned long nextAirPump = AIR_PUMP_INTERVAL - (currentTime - lastAirPumpTime);
+  int minutesLeft = nextAirPump / 60000;
+  int secondsLeft = (nextAirPump % 60000) / 1000;
+  tft.setCursor(10, 290);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.printf("Naechste Luftp.: %dm %ds", minutesLeft, secondsLeft);
   
   // Serielle Ausgabe
   Serial.printf("ADC: %d | Wasserstand: %.1f cm", adcValue, waterLevelCm);
