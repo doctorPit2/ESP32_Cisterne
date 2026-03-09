@@ -7,6 +7,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 - **Wasserstandsmessung** mit MPX5050 Drucksensor
 - **TFT-Display** (480x320, ST7796) zur Echtzeitanzeige
 - **Automatische Pumpensteuerung** mit Hysterese
+- **RRD-Verlaufsdiagramm** (Round Robin Database) mit 220 Datenpunkten
 - **Visueller Fortschrittsbalken** für Füllstand
 - Serielle Ausgabe für Monitoring
 
@@ -47,6 +48,17 @@ Die Pumpe wird automatisch gesteuert mit **Hysterese**:
 
 Dies verhindert häufiges Ein-/Ausschalten.
 
+### RRD-Verlaufs-Graph
+- **Ringpuffer** mit 220 Datenpunkten (ca. 18 Minuten Historie)
+- **Sampling-Intervall**: 5 Sekunden pro Datenpunkt
+- **Y-Achse**: 15-30 cm (relevanter Bereich für Pumpensteuerung)
+- **Gitterlinien** bei 15, 20, 25, 30 cm
+- **Grüne Linie**: Pumpe EIN-Schwelle (30 cm)
+- **Rote Linie**: Pumpe AUS-Schwelle (15 cm)
+- **Cyan-Kurve**: Aktueller Wasserstandverlauf
+
+Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
+
 ## Kalibrierung
 
 Passe die Werte in `src/main.cpp` an:
@@ -59,6 +71,17 @@ Passe die Werte in `src/main.cpp` an:
 #define PUMP_ON_LEVEL 30.0     // Pumpe EIN-Schwelle
 #define PUMP_OFF_LEVEL 15.0    // Pumpe AUS-Schwelle
 ```
+
+**Graph-Einstellungen:**
+```cpp
+#define GRAPH_MIN 15.0         // Min. Wasserstand im Graph
+#define GRAPH_MAX 30.0         // Max. Wasserstand im Graph
+#define GRAPH_SAMPLES 220      // Anzahl Datenpunkte
+#define SAMPLE_INTERVAL 5000   // Messintervall in ms
+```
+
+**Zeitspanne des Graphen:**
+- 220 Punkte × 5 Sekunden = 1100 Sekunden ≈ **18 Minuten Historie**
 
 ## Installation
 
@@ -83,21 +106,25 @@ pio run --target upload
 ## Display-Ansicht
 
 ```
-┌─────────────────────────────────────┐
-│   Zisternen-Monitor                 │
-│                                      │
-│ ADC-Wert:                            │
-│   1234 / 4095                        │
-│                                      │
-│ Wasserstand:                         │
-│   25.3 cm                            │
-│                                      │
-│ [████████░░░░░░░░░░░░░░░░]          │
-│                                      │
-│ Pumpe: AUS                           │
-│ EIN: 30 cm | AUS: 15 cm              │
-└─────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ Zisternen-Monitor                                         │
+│                                                            │
+│ ADC-Wert:              │   Verlauf (5s/Punkt)             │
+│   1234 / 4095          │  30├─────────────────────────    │
+│                        │    │         ╱╲                  │
+│ Wasserstand:           │  25│      ╱─╯  ╲                 │
+│   25.3 cm              │    │    ╱        ╲               │
+│                        │  20│  ╱           ╲─╮            │
+│ [████████░░░]          │    │╱                ╲           │
+│                        │  15└──────────────────────╲──    │
+│ Pumpe: AUS             │         ← Ältere   Neue →        │
+│ EIN: 30cm AUS: 15cm    │                                  │
+└───────────────────────────────────────────────────────────┘
 ```
+
+**Layout:**
+- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Fortschrittsbalken)
+- **Rechts**: Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
 
 ## Lizenz
 

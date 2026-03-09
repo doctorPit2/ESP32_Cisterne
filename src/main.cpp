@@ -19,8 +19,72 @@ TFT_eSPI tft = TFT_eSPI();
 #define PUMP_ON_LEVEL 30.0   // Pumpe EINschalten bei 30 cm
 #define PUMP_OFF_LEVEL 15.0  // Pumpe AUSschalten bei 15 cm
 
+// RRD Graph-Einstellungen
+#define GRAPH_WIDTH 220      // Breite des Graphen in Pixel
+#define GRAPH_HEIGHT 250     // Höhe des Graphen in Pixel
+#define GRAPH_X 250          // X-Position des Graphen
+#define GRAPH_Y 50           // Y-Position des Graphen
+#define GRAPH_MIN 15.0       // Minimaler Wasserstand im Graph (cm)
+#define GRAPH_MAX 30.0       // Maximaler Wasserstand im Graph (cm)
+#define GRAPH_SAMPLES 220    // Anzahl der Datenpunkte (= Breite)
+#define SAMPLE_INTERVAL 5000 // Messintervall in ms (5 Sekunden)
+
 // Globale Variablen
 bool pumpActive = false;
+float graphData[GRAPH_SAMPLES]; // Ringpuffer für Messwerte
+int graphIndex = 0;              // Aktueller Index im Ringpuffer
+unsigned long lastSampleTime = 0; // Zeitpunkt der letzten Messung
+
+// Funktion zum Zeichnen des Verlaufs-Graphen
+void drawGraph() {
+  // Graph-Hintergrund und Rahmen
+  tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_BLACK);
+  tft.drawRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_WHITE);
+  
+  // Horizontale Gitterlinien (15, 20, 25, 30 cm)
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  for (int i = 0; i <= 3; i++) {
+    float level = GRAPH_MIN + i * 5.0;
+    int y = GRAPH_Y + GRAPH_HEIGHT - (int)((level - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+    tft.drawLine(GRAPH_X + 1, y, GRAPH_X + GRAPH_WIDTH - 1, y, TFT_DARKGREY);
+    // Y-Achsen-Beschriftung
+    tft.setCursor(GRAPH_X + 3, y - 4);
+    tft.printf("%.0f", level);
+  }
+  
+  // Pumpen-Schwellwerte hervorheben
+  int pumpOnY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_ON_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+  int pumpOffY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_OFF_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+  tft.drawLine(GRAPH_X + 1, pumpOnY, GRAPH_X + GRAPH_WIDTH - 1, pumpOnY, TFT_GREEN);
+  tft.drawLine(GRAPH_X + 1, pumpOffY, GRAPH_X + GRAPH_WIDTH - 1, pumpOffY, TFT_RED);
+  
+  // Datenpunkte zeichnen
+  for (int i = 1; i < GRAPH_SAMPLES; i++) {
+    int idx1 = (graphIndex + i - 1) % GRAPH_SAMPLES;
+    int idx2 = (graphIndex + i) % GRAPH_SAMPLES;
+    
+    // Nur zeichnen, wenn Werte gültig sind (nicht initial 0)
+    if (graphData[idx1] >= GRAPH_MIN || graphData[idx2] >= GRAPH_MIN) {
+      // Werte auf Graph-Bereich begrenzen
+      float val1 = constrain(graphData[idx1], GRAPH_MIN, GRAPH_MAX);
+      float val2 = constrain(graphData[idx2], GRAPH_MIN, GRAPH_MAX);
+      
+      // Y-Position berechnen (invertiert, da 0 oben ist)
+      int y1 = GRAPH_Y + GRAPH_HEIGHT - (int)((val1 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+      int y2 = GRAPH_Y + GRAPH_HEIGHT - (int)((val2 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+      
+      // Linie zwischen Punkten zeichnen
+      tft.drawLine(GRAPH_X + i - 1, y1, GRAPH_X + i, y2, TFT_CYAN);
+    }
+  }
+  
+  // Graph-Titel
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(GRAPH_X + 20, GRAPH_Y - 12);
+  tft.println("Verlauf (5s / Punkt)");
+}
 
 void setup() {
   Serial.begin(115200);
@@ -46,13 +110,18 @@ void setup() {
   // Hintergrund schwarz
   tft.fillScreen(TFT_BLACK);
   
+  // Ringpuffer initialisieren
+  for (int i = 0; i < GRAPH_SAMPLES; i++) {
+    graphData[i] = 0.0;
+  }
+  
   // Überschrift
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.setTextSize(3);
+  tft.setTextSize(2);
   tft.setCursor(10, 10);
   tft.println("Zisternen-Monitor");
   
-  // Statische Beschriftungen
+  // Statische Beschriftungen (linke Seite)
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
   tft.setCursor(10, 60);
@@ -61,8 +130,11 @@ void setup() {
   tft.setCursor(10, 120);
   tft.println("Wasserstand:");
   
-  tft.setCursor(10, 240);
+  tft.setCursor(10, 210);
   tft.println("Pumpe:");
+  
+  // Initialen Graph zeichnen
+  drawGraph();
   
   Serial.println("Display initialisiert!");
 }
@@ -98,33 +170,46 @@ void loop() {
     Serial.println(">>> PUMPE AUSGESCHALTET <<<");
   }
   
-  // ADC-Wert anzeigen
+  // RRD-Daten aktualisieren (alle 5 Sekunden)
+  unsigned long currentTime = millis();
+  if (currentTime - lastSampleTime >= SAMPLE_INTERVAL) {
+    lastSampleTime = currentTime;
+    
+    // Neuen Wert in Ringpuffer speichern
+    graphData[graphIndex] = waterLevelCm;
+    graphIndex = (graphIndex + 1) % GRAPH_SAMPLES;
+    
+    // Graph neu zeichnen
+    drawGraph();
+  }
+  
+  // ADC-Wert anzeigen (linke Seite, kompakt)
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(3);
-  tft.fillRect(10, 90, 460, 25, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 90);
+  tft.setTextSize(2);
+  tft.fillRect(10, 85, 230, 20, TFT_BLACK); // Bereich löschen
+  tft.setCursor(10, 85);
   tft.printf("%4d / 4095", adcValue);
   
   // Wasserstand anzeigen
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.setTextSize(4);
-  tft.fillRect(10, 150, 460, 35, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 150);
+  tft.setTextSize(3);
+  tft.fillRect(10, 145, 230, 30, TFT_BLACK); // Bereich löschen
+  tft.setCursor(10, 145);
   tft.printf("%.1f cm", waterLevelCm);
   
-  // Fortschrittsbalken (0-300 cm)
-  int barWidth = (int)(waterLevelCm * 400 / WATER_LEVEL_MAX);
-  tft.fillRect(10, 200, 400, 30, TFT_BLACK);
-  tft.drawRect(10, 200, 400, 30, TFT_WHITE);
-  tft.fillRect(11, 201, barWidth, 28, TFT_BLUE);
+  // Fortschrittsbalken (kompakt)
+  int barWidth = (int)(waterLevelCm * 200 / WATER_LEVEL_MAX);
+  tft.fillRect(10, 180, 210, 20, TFT_BLACK);
+  tft.drawRect(10, 180, 210, 20, TFT_WHITE);
+  tft.fillRect(11, 181, barWidth, 18, TFT_BLUE);
   
   // Pumpenstatus anzeigen
-  tft.setTextSize(3);
-  tft.fillRect(150, 240, 320, 30, TFT_BLACK); // Bereich löschen
-  tft.setCursor(150, 240);
+  tft.setTextSize(2);
+  tft.fillRect(90, 210, 150, 25, TFT_BLACK); // Bereich löschen
+  tft.setCursor(90, 210);
   if (pumpActive) {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.println("EIN (Pumpt)");
+    tft.println("EIN");
   } else {
     tft.setTextColor(TFT_RED, TFT_BLACK);
     tft.println("AUS");
@@ -133,8 +218,8 @@ void loop() {
   // Schwellwerte anzeigen
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(1);
-  tft.setCursor(10, 280);
-  tft.printf("EIN: %.0f cm | AUS: %.0f cm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
+  tft.setCursor(10, 245);
+  tft.printf("EIN: %.0fcm AUS: %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
   
   // Serielle Ausgabe
   Serial.printf("ADC: %d | Wasserstand: %.1f cm", adcValue, waterLevelCm);
