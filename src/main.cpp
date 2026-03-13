@@ -50,8 +50,8 @@ WaterLevelData dataToSend;
 #define GRAPH_Y 50           // Y-Position des Graphen
 #define GRAPH_MIN 15.0       // Minimaler Wasserstand im Graph (cm)
 #define GRAPH_MAX 30.0       // Maximaler Wasserstand im Graph (cm)
-#define GRAPH_SAMPLES 220    // Anzahl der Datenpunkte (= Breite)
-#define SAMPLE_INTERVAL 5000 // Messintervall in ms (5 Sekunden)
+#define GRAPH_SAMPLES 96     // Anzahl der Datenpunkte (24h / 15min = 96)
+#define SAMPLE_INTERVAL 900000 // Messintervall in ms (15 Minuten)
 
 // Globale Variablen
 bool pumpActive = false;
@@ -168,6 +168,15 @@ void drawGraph() {
     tft.printf("%.0f", level);
   }
   
+  // X-Achsen-Beschriftung (Stunden)
+  // Zeitachse von links (24h) nach rechts (0h = jetzt)
+  for (int h = 0; h <= 24; h += 4) {
+    int x = GRAPH_X + (GRAPH_WIDTH * (24 - h)) / 24;
+    tft.drawLine(x, GRAPH_Y + GRAPH_HEIGHT - 1, x, GRAPH_Y + GRAPH_HEIGHT + 3, TFT_DARKGREY);
+    tft.setCursor(x - 6, GRAPH_Y + GRAPH_HEIGHT + 5);
+    tft.printf("%dh", h);
+  }
+  
   // Pumpen-Schwellwerte hervorheben
   int pumpOnY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_ON_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
   int pumpOffY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_OFF_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
@@ -198,7 +207,7 @@ void drawGraph() {
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(1);
   tft.setCursor(GRAPH_X + 20, GRAPH_Y - 12);
-  tft.println("Verlauf (5s / Punkt)");
+  tft.println("Verlauf (24h)");
 }
 
 void setup() {

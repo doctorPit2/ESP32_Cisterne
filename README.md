@@ -53,9 +53,10 @@ Die Pumpe wird automatisch gesteuert mit **Hysterese**:
 Dies verhindert häufiges Ein-/Ausschalten.
 
 ### RRD-Verlaufs-Graph
-- **Ringpuffer** mit 220 Datenpunkten (ca. 18 Minuten Historie)
-- **Sampling-Intervall**: 5 Sekunden pro Datenpunkt
+- **Ringpuffer** mit 96 Datenpunkten (24 Stunden Historie)
+- **Sampling-Intervall**: 15 Minuten pro Datenpunkt
 - **Y-Achse**: 15-30 cm (relevanter Bereich für Pumpensteuerung)
+- **X-Achse**: Stunden-Beschriftung (0h bis 24h)
 - **Gitterlinien** bei 15, 20, 25, 30 cm
 - **Grüne Linie**: Pumpe EIN-Schwelle (30 cm)
 - **Rote Linie**: Pumpe AUS-Schwelle (15 cm)
@@ -101,12 +102,12 @@ Passe die Werte in `src/main.cpp` an:
 ```cpp
 #define GRAPH_MIN 15.0         // Min. Wasserstand im Graph
 #define GRAPH_MAX 30.0         // Max. Wasserstand im Graph
-#define GRAPH_SAMPLES 220      // Anzahl Datenpunkte
-#define SAMPLE_INTERVAL 5000   // Messintervall in ms
+#define GRAPH_SAMPLES 96       // Anzahl Datenpunkte
+#define SAMPLE_INTERVAL 900000 // Messintervall in ms (15 Minuten)
 ```
 
 **Zeitspanne des Graphen:**
-- 220 Punkte × 5 Sekunden = 1100 Sekunden ≈ **18 Minuten Historie**
+- 96 Punkte × 15 Minuten = 1440 Minuten = **24 Stunden Historie**
 
 **Luftpumpen-Einstellungen:**
 ```cpp
