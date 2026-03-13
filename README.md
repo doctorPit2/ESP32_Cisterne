@@ -6,11 +6,12 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 
 - **Wasserstandsmessung** mit MPX5050 Drucksensor
 - **TFT-Display** (480x320, ST7796) zur Echtzeitanzeige
+- **Touch-Steuerung** mit XPT2046 Touch-Controller für manuelle Pumpensteuerung
 - **Automatische Pumpensteuerung** mit Hysterese
 - **Automatischer Druckausgleich** mit Luftpumpe (alle 5 Min. für 10 Sek.)
 - Messung wird während Druckausgleich pausiert
 - **ESP-NOW Datenübertragung** zur Wetterstation (alle 15 Minuten)
-- **RRD-Verlaufsdiagramm** (Round Robin Database) mit 220 Datenpunkten
+- **RRD-Verlaufsdiagramm** (Round Robin Database) mit 96 Datenpunkten (24h Historie)
 - **Visueller Fortschrittsbalken** für Füllstand
 - Serielle Ausgabe für Monitoring
 
@@ -18,7 +19,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 
 ### Komponenten
 - ESP32 DevKit v1
-- 3.5" TFT Display (480x320, ST7796 Treiber)
+- 3.5" TFT Display (480x320, ST7796 Treiber) mit XPT2046 Touch-Controller
 - MPX5050 Drucksensor (0-50 kPa)
 - N-Channel MOSFET für Relais-Steuerung
 - Relais für Wasserpumpe
@@ -34,6 +35,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 | TFT DC | GPIO 2 | Data/Command |
 | TFT RST | GPIO 4 | Reset |
 | TFT BL | GPIO 27 | Backlight |
+| Touch CS | GPIO 33 | Touch Chip Select (XPT2046) |
 | Drucksensor | GPIO 35 | ADC1 CH7 |
 | Pumpen-MOSFET | GPIO 17 | Digital Output |
 | Luftpumpen-MOSFET | GPIO 16 | Digital Output |
@@ -43,14 +45,40 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 ### Wasserstandsmessung
 - Der MPX5050 Drucksensor misst den hydrostatischen Druck
 - ADC-Werte (0-4095) werden in cm Wasserstand umgerechnet
-- Mittelwertbildung aus 10 Messungen für stabile Werte
+- **Mittelwertbildung aus 100 Messungen** für sehr stabile Werte (reduziert Sensor-Schwankungen)
+- **Display-Update alle 3 Sekunden** (reduziert Flackern, zeigt gleichmäßigere Werte)
 
 ### Pumpensteuerung
-Die Pumpe wird automatisch gesteuert mit **Hysterese**:
+
+Die Pumpe kann in drei Modi betrieben werden:
+
+#### 1. **AUTO-Modus** (Standard)
+Automatische Steuerung mit **Hysterese**:
 - **EINschalten**: bei ≥ 30 cm Wasserstand
 - **AUSschalten**: bei ≤ 15 cm Wasserstand
 
 Dies verhindert häufiges Ein-/Ausschalten.
+
+#### 2. **MANUELL EIN-Modus**
+- Pumpe läuft kontinuierlich bis der Wasserstand 15 cm erreicht
+- Wechselt dann automatisch zurück in den AUTO-Modus
+- Nützlich zum schnellen Entleeren der Zisterne
+
+#### 3. **MANUELL AUS-Modus**
+- Pumpe bleibt ausgeschaltet, unabhängig vom Wasserstand
+- Nützlich für Wartungsarbeiten
+
+#### Moduswechsel:
+- **Touch-Display**: Tippen Sie auf den farbigen Button auf dem Display
+  - 🔵 **Blau** = AUTO-Modus
+  - 🟢 **Grün** = MANUELL EIN  
+  - 🔴 **Rot** = MANUELL AUS
+- **Serielle Konsole**: Sende 'M' über die serielle Konsole (115200 Baud)
+  
+**Touch-Controller**: XPT2046 (über SPI, Chip Select GPIO 33)
+- Die Touch-Kalibrierung kann in `main.cpp` in der Funktion `checkTouchButton()` angepasst werden
+- Bei ersten Tests werden die Touch-Koordinaten im Serial Monitor angezeigt
+- Falls der Touch nicht genau funktioniert, passen Sie die `map()`-Werte an
 
 ### RRD-Verlaufs-Graph
 - **Ringpuffer** mit 96 Datenpunkten (24 Stunden Historie)
@@ -104,6 +132,7 @@ Passe die Werte in `src/main.cpp` an:
 #define GRAPH_MAX 30.0         // Max. Wasserstand im Graph
 #define GRAPH_SAMPLES 96       // Anzahl Datenpunkte
 #define SAMPLE_INTERVAL 900000 // Messintervall in ms (15 Minuten)
+#define DISPLAY_UPDATE_INTERVAL 3000 // Display-Aktualisierung (3 Sekunden)
 ```
 
 **Zeitspanne des Graphen:**

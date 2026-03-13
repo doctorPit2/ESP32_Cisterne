@@ -1,21 +1,29 @@
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
 #include <esp_now.h>
 #include <WiFi.h>
 
 // TFT Display initialisieren
 TFT_eSPI tft = TFT_eSPI();
 
+// XPT2046 Touch-Controller initialisieren
+#define TOUCH_CS 33   // Touch Chip Select Pin
+#define TOUCH_IRQ 36  // Touch Interrupt Pin (optional, verbessert die Erkennung)
+XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
+
 // MAC-Adresse der Wetterstation (muss angepasst werden!)
 // Format: {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}
-uint8_t weatherStationMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+//uint8_t weatherStationMAC[] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+
+uint8_t weatherStationMAC[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};   //Kiste schwarz
 
 // Datenstruktur für ESP-NOW Übertragung
 typedef struct {
   float waterLevel;      // Wasserstand in cm
   int adcValue;          // Roher ADC-Wert
   bool pumpActive;       // Status der Wasserpumpe
-  unsigned long uptime;  // Betriebszeit in Sekunden
 } WaterLevelData;
 
 WaterLevelData dataToSend;
@@ -32,8 +40,8 @@ WaterLevelData dataToSend;
 #define AIR_PUMP_DURATION 10000   // 10 Sekunden in ms
 
 // ESP-NOW Einstellungen
-#define ESPNOW_SEND_INTERVAL 900000  // 15 Minuten in ms (900.000 ms)
-
+//#define ESPNOW_SEND_INTERVAL 900000  // 15 Minuten in ms (900.000 ms)
+#define ESPNOW_SEND_INTERVAL 2000  // 15 Minuten in ms (900.000 ms)
 // Kalibrierungswerte (anpassen nach Bedarf)
 #define ADC_MIN 0          // ADC-Wert bei 0 cm Wasserstand
 #define ADC_MAX 4095       // ADC-Wert bei maximalem Wasserstand
@@ -52,12 +60,32 @@ WaterLevelData dataToSend;
 #define GRAPH_MAX 30.0       // Maximaler Wasserstand im Graph (cm)
 #define GRAPH_SAMPLES 96     // Anzahl der Datenpunkte (24h / 15min = 96)
 #define SAMPLE_INTERVAL 900000 // Messintervall in ms (15 Minuten)
+#define DISPLAY_UPDATE_INTERVAL 3000 // Display-Update alle 3 Sekunden
+
+// Touch-Button für manuelle Pumpensteuerung
+#define BUTTON_X 10
+#define BUTTON_Y 60
+#define BUTTON_W 230
+#define BUTTON_H 40
+
+// Touch-Support aktivieren
+#define TOUCH_ENABLED true
+#define TOUCH_CALIBRATION_MODE false  // Kalibrierung abgeschlossen!
+
+// Pumpenmodus-Enum
+enum PumpMode {
+  MODE_AUTO,       // Automatische Steuerung (Hysterese 30cm EIN, 15cm AUS)
+  MODE_MANUAL_ON,  // Manuell EIN (läuft dauerhaft)
+  MODE_MANUAL_OFF  // Manuell AUS (bleibt aus)
+};
 
 // Globale Variablen
 bool pumpActive = false;
+PumpMode pumpMode = MODE_AUTO;  // Startet im Automatikmodus
 float graphData[GRAPH_SAMPLES]; // Ringpuffer für Messwerte
 int graphIndex = 0;              // Aktueller Index im Ringpuffer
 unsigned long lastSampleTime = 0; // Zeitpunkt der letzten Messung
+unsigned long lastDisplayUpdate = 0; // Zeitpunkt des letzten Display-Updates
 
 // Luftpumpen-Variablen
 unsigned long lastAirPumpTime = 0;  // Letzter Start der Luftpumpe
@@ -136,7 +164,6 @@ void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
   dataToSend.waterLevel = waterLevel;
   dataToSend.adcValue = adcValue;
   dataToSend.pumpActive = pumpActive;
-  dataToSend.uptime = millis() / 1000;
   
   // Daten senden
   esp_err_t result = esp_now_send(weatherStationMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
@@ -148,6 +175,236 @@ void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
   } else {
     Serial.println("ESP-NOW: Fehler beim Senden!");
   }
+}
+
+// Funktion zum Zeichnen des Pumpen-Modus-Buttons
+void drawPumpModeButton() {
+  // Button-Hintergrund je nach Modus
+  uint16_t bgColor, textColor;
+  const char* buttonText;
+  
+  switch (pumpMode) {
+    case MODE_AUTO:
+      bgColor = TFT_BLUE;
+      textColor = TFT_WHITE;
+      buttonText = "AUTO";
+      break;
+    case MODE_MANUAL_ON:
+      bgColor = TFT_GREEN;
+      textColor = TFT_BLACK;
+      buttonText = "MANUELL EIN";
+      break;
+    case MODE_MANUAL_OFF:
+      bgColor = TFT_RED;
+      textColor = TFT_WHITE;
+      buttonText = "MANUELL AUS";
+      break;
+  }
+  
+  // Button zeichnen
+  tft.fillRoundRect(BUTTON_X, BUTTON_Y, BUTTON_W, BUTTON_H, 8, bgColor);
+  tft.drawRoundRect(BUTTON_X, BUTTON_Y, BUTTON_W, BUTTON_H, 8, TFT_WHITE);
+  
+  // Text zentrieren
+  tft.setTextColor(textColor, bgColor);
+  tft.setTextSize(2);
+  int textWidth = strlen(buttonText) * 12; // Ungefähre Textbreite
+  int textX = BUTTON_X + (BUTTON_W - textWidth) / 2;
+  int textY = BUTTON_Y + (BUTTON_H - 16) / 2;
+  tft.setCursor(textX, textY);
+  tft.println(buttonText);
+}
+
+// Touch-Kalibrierungsmodus mit visueller Anzeige
+void touchCalibrationMode() {
+  static bool screenInitialized = false;
+  static int lastTouchX = -1, lastTouchY = -1;
+  
+  // Einmalige Initialisierung des Kalibrierungsbildschirms
+  if (!screenInitialized) {
+    tft.fillScreen(TFT_BLACK);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.setTextSize(2);
+    tft.setCursor(10, 10);
+    tft.println("TOUCH KALIBRIERUNG");
+    
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setCursor(10, 40);
+    tft.println("Beruehre den Bildschirm!");
+    tft.setCursor(10, 55);
+    tft.println("Kreise zeigen Touch-Position");
+    
+    // Button-Bereich als Rechteck anzeigen
+    tft.drawRect(BUTTON_X, BUTTON_Y, BUTTON_W, BUTTON_H, TFT_GREEN);
+    tft.setCursor(BUTTON_X + 5, BUTTON_Y + 5);
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("Ziel-Button");
+    
+    // Display-Raster zeichnen (alle 100 Pixel)
+    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+    for (int x = 0; x <= 480; x += 100) {
+      tft.drawLine(x, 0, x, 320, TFT_DARKGREY);
+      if (x < 480) {
+        tft.setCursor(x + 2, 305);
+        tft.printf("%d", x);
+      }
+    }
+    for (int y = 0; y <= 320; y += 100) {
+      tft.drawLine(0, y, 480, y, TFT_DARKGREY);
+      if (y > 0 && y < 320) {
+        tft.setCursor(2, y + 2);
+        tft.printf("%d", y);
+      }
+    }
+    
+    screenInitialized = true;
+  }
+  
+  // Touch prüfen
+  if (touch.touched()) {
+    TS_Point p = touch.getPoint();
+    
+    // Touch-Koordinaten mappen (Achsen invertiert wegen Spiegelung)
+    int displayX = map(p.x, 3700, 300, 0, 480);  // Min/Max getauscht = invertiert
+    int displayY = map(p.y, 3600, 400, 0, 320);  // Min/Max getauscht = invertiert
+    displayX = constrain(displayX, 0, 480);
+    displayY = constrain(displayY, 0, 320);
+    
+    // Alten Touchpoint löschen (schwarzer Kreis)
+    if (lastTouchX >= 0 && lastTouchY >= 0) {
+      tft.fillCircle(lastTouchX, lastTouchY, 10, TFT_BLACK);
+      // Raster wiederherstellen falls übermalt
+      if (lastTouchX % 100 < 20 || lastTouchX % 100 > 80) {
+        int gridX = (lastTouchX / 100) * 100;
+        tft.drawLine(gridX, max(0, lastTouchY-10), gridX, min(320, lastTouchY+10), TFT_DARKGREY);
+      }
+      if (lastTouchY % 100 < 20 || lastTouchY % 100 > 80) {
+        int gridY = (lastTouchY / 100) * 100;
+        tft.drawLine(max(0, lastTouchX-10), gridY, min(480, lastTouchX+10), gridY, TFT_DARKGREY);
+      }
+    }
+    
+    // Neuen Touchpoint zeichnen (roter Kreis mit weißem Rand)
+    tft.fillCircle(displayX, displayY, 8, TFT_RED);
+    tft.drawCircle(displayX, displayY, 10, TFT_WHITE);
+    
+    // Koordinaten anzeigen im Info-Bereich
+    tft.fillRect(10, 75, 460, 60, TFT_BLACK);
+    tft.setTextSize(1);
+    tft.setTextColor(TFT_CYAN, TFT_BLACK);
+    tft.setCursor(10, 75);
+    tft.printf("RAW:    x=%4d  y=%4d  z=%4d", p.x, p.y, p.z);
+    tft.setCursor(10, 90);
+    tft.printf("MAPPED: x=%3d   y=%3d", displayX, displayY);
+    tft.setCursor(10, 105);
+    if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
+        displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
+      tft.setTextColor(TFT_GREEN, TFT_BLACK);
+      tft.println(">>> IM BUTTON-BEREICH! <<<");
+    } else {
+      tft.setTextColor(TFT_RED, TFT_BLACK);
+      tft.println("Ausserhalb Button");
+    }
+    tft.setCursor(10, 120);
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.printf("Button: X=%d-%d Y=%d-%d", BUTTON_X, BUTTON_X+BUTTON_W, BUTTON_Y, BUTTON_Y+BUTTON_H);
+    
+    // Serielle Ausgabe
+    Serial.printf("RAW: x=%d, y=%d, z=%d -> MAPPED: x=%d, y=%d", 
+                  p.x, p.y, p.z, displayX, displayY);
+    if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
+        displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
+      Serial.println(" [IM BUTTON!]");
+    } else {
+      Serial.println();
+    }
+    
+    lastTouchX = displayX;
+    lastTouchY = displayY;
+    
+    delay(50); // Entprellung
+  }
+}
+
+// Touch-Handling für Pumpen-Modus-Button
+void checkTouchButton() {
+#if TOUCH_ENABLED
+  // Prüfen ob Display berührt wurde
+  if (touch.touched()) {
+    TS_Point p = touch.getPoint();
+    
+    // Debug: Raw-Werte ausgeben
+    Serial.printf("Touch RAW: x=%d, y=%d, z=%d\n", p.x, p.y, p.z);
+    
+    // Touch-Koordinaten mappen (Achsen invertiert wegen Spiegelung)
+    int displayX = map(p.x, 3700, 300, 0, 480);  // Min/Max getauscht = invertiert
+    int displayY = map(p.y, 3600, 400, 0, 320);  // Min/Max getauscht = invertiert
+    
+    // Begrenzung auf gültige Display-Bereiche
+    displayX = constrain(displayX, 0, 480);
+    displayY = constrain(displayY, 0, 320);
+    
+    // Debug-Ausgabe mit Button-Info
+    Serial.printf("Touch MAPPED: x=%d, y=%d (Button: %d-%d, %d-%d)\n", 
+                  displayX, displayY, BUTTON_X, BUTTON_X+BUTTON_W, BUTTON_Y, BUTTON_Y+BUTTON_H);
+    
+    // Prüfen ob Touch im Button-Bereich
+    if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
+        displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
+      
+      Serial.println("Touch im Button-Bereich!");
+      
+      // Modus umschalten
+      switch (pumpMode) {
+        case MODE_AUTO:
+          pumpMode = MODE_MANUAL_ON;
+          Serial.println(">>> PUMPE MANUELL EIN <<<");
+          break;
+        case MODE_MANUAL_ON:
+          pumpMode = MODE_MANUAL_OFF;
+          Serial.println(">>> PUMPE MANUELL AUS <<<");
+          break;
+        case MODE_MANUAL_OFF:
+          pumpMode = MODE_AUTO;
+          Serial.println(">>> PUMPE AUTO-MODUS <<<");
+          break;
+      }
+      
+      // Button neu zeichnen
+      drawPumpModeButton();
+      
+      // Warten bis Touch losgelassen wird
+      while (touch.touched()) {
+        delay(10);
+      }
+      delay(100); // Zusätzliche Entprellung
+    }
+  }
+#else
+  // Serielle Steuerung als Alternative
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    if (cmd == 'm' || cmd == 'M') {
+      // Modus umschalten
+      switch (pumpMode) {
+        case MODE_AUTO:
+          pumpMode = MODE_MANUAL_ON;
+          Serial.println(">>> PUMPE MANUELL EIN <<<");
+          break;
+        case MODE_MANUAL_ON:
+          pumpMode = MODE_MANUAL_OFF;
+          Serial.println(">>> PUMPE MANUELL AUS <<<");
+          break;
+        case MODE_MANUAL_OFF:
+          pumpMode = MODE_AUTO;
+          Serial.println(">>> PUMPE AUTO-MODUS <<<");
+          break;
+      }
+      drawPumpModeButton();
+    }
+  }
+#endif
 }
 
 // Funktion zum Zeichnen des Verlaufs-Graphen
@@ -222,17 +479,36 @@ void setup() {
   // Pumpen-MOSFET konfigurieren
   pinMode(PUMP_MOSFET_PIN, OUTPUT);
   digitalWrite(PUMP_MOSFET_PIN, LOW); // Pumpe initial AUS
+  Serial.printf("Pumpen-MOSFET konfiguriert auf GPIO %d (OUTPUT, initial LOW)\n", PUMP_MOSFET_PIN);
   
   // Luftpumpen-MOSFET konfigurieren
   pinMode(AIR_PUMP_PIN, OUTPUT);
   digitalWrite(AIR_PUMP_PIN, LOW); // Luftpumpe initial AUS
+  Serial.printf("Luftpumpen-MOSFET konfiguriert auf GPIO %d (OUTPUT, initial LOW)\n", AIR_PUMP_PIN);
   
   // ESP-NOW initialisieren
   initESPNow();
   
-  // Display initialisieren
+  // SPI Bus mit custom Pins initialisieren (MUSS vor Display UND Touch erfolgen!)
+  // Diese Pins müssen mit platformio.ini übereinstimmen
+  SPI.begin(14, 12, 13, -1); // SCK=14, MISO=12, MOSI=13, SS=-1 (nicht verwendet)
+  Serial.println("SPI initialisiert: SCK=14, MISO=12, MOSI=13");
+  
+  // Display initialisieren (verwendet bereits initialisierten SPI-Bus)
   tft.init();
   tft.setRotation(1); // Landscape-Modus (0-3 möglich)
+  Serial.println("TFT Display initialisiert");
+  
+  // Touch-Controller initialisieren (verwendet bereits initialisierten SPI-Bus)
+  #if TOUCH_ENABLED
+  touch.begin(); // Verwendet jetzt den bereits initialisierten SPI-Bus
+  touch.setRotation(1); // Gleiche Rotation wie Display
+  Serial.println("XPT2046 Touch initialisiert");
+  Serial.printf("Touch: CS=%d, IRQ=%d\\n", TOUCH_CS, TOUCH_IRQ);
+  Serial.println("Tippen Sie auf den Button, um den Modus zu wechseln");
+  #else
+  Serial.println("Touch deaktiviert - Sende 'M' über Serial zum Umschalten");
+  #endif
   
   // Backlight einschalten
   pinMode(27, OUTPUT);
@@ -246,6 +522,12 @@ void setup() {
     graphData[i] = 0.0;
   }
   
+#if TOUCH_CALIBRATION_MODE
+  // Kalibrierungsmodus - minimale Anzeige
+  Serial.println("*** TOUCH KALIBRIERUNGSMODUS AKTIV ***");
+  Serial.println("*** Setze TOUCH_CALIBRATION_MODE auf false nach Kalibrierung ***");
+#else
+  // Normale Anzeige
   // Überschrift
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.setTextSize(2);
@@ -255,29 +537,43 @@ void setup() {
   // Statische Beschriftungen (linke Seite)
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
-  tft.setCursor(10, 60);
-  tft.println("ADC-Wert:");
+  tft.setCursor(10, 35);
+  tft.println("Pumpenmodus:");
   
-  tft.setCursor(10, 120);
+  tft.setCursor(10, 110);
   tft.println("Wasserstand:");
   
-  tft.setCursor(10, 210);
-  tft.println("Pumpe:");
+  tft.setCursor(10, 195);
+  tft.println("Status:");
   
-  tft.setCursor(10, 240);
+  tft.setCursor(10, 235);
   tft.println("Luftpumpe:");
   
-  tft.setCursor(10, 270);
+  tft.setCursor(10, 255);
   tft.println("ESP-NOW:");
+  
+  // Pumpen-Modus-Button zeichnen
+  drawPumpModeButton();
   
   // Initialen Graph zeichnen
   drawGraph();
+#endif
   
   Serial.println("Display initialisiert!");
 }
 
 void loop() {
   unsigned long currentTime = millis();
+  
+#if TOUCH_CALIBRATION_MODE
+  // Touch-Kalibrierungsmodus - nur Touch-Visualisierung
+  touchCalibrationMode();
+  delay(10);
+  return; // Rest des Loops überspringen
+#endif
+  
+  // Touch-Button überprüfen
+  checkTouchButton();
   
   // Luftpumpen-Steuerung (alle 5 Minuten für 10 Sekunden)
   if (!airPumpActive && (currentTime - lastAirPumpTime >= AIR_PUMP_INTERVAL)) {
@@ -290,8 +586,8 @@ void loop() {
     
     // Status auf Display aktualisieren
     tft.setTextSize(2);
-    tft.fillRect(130, 240, 110, 25, TFT_BLACK);
-    tft.setCursor(130, 240);
+    tft.fillRect(130, 235, 110, 25, TFT_BLACK);
+    tft.setCursor(130, 235);
     tft.setTextColor(TFT_ORANGE, TFT_BLACK);
     tft.println("AKTIV");
   }
@@ -304,8 +600,8 @@ void loop() {
     
     // Status auf Display aktualisieren
     tft.setTextSize(2);
-    tft.fillRect(130, 240, 110, 25, TFT_BLACK);
-    tft.setCursor(130, 240);
+    tft.fillRect(130, 235, 110, 25, TFT_BLACK);
+    tft.setCursor(130, 235);
     tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
     tft.println("AUS");
   }
@@ -316,13 +612,13 @@ void loop() {
     return; // Loop beenden und neu starten
   }
   
-  // ADC-Wert vom Drucksensor lesen (Mittelwert aus 10 Messungen)
+  // ADC-Wert vom Drucksensor lesen (Mittelwert aus 100 Messungen für stabilere Werte)
   int adcSum = 0;
-  for (int i = 0; i < 10; i++) {
+  for (int i = 0; i < 100; i++) {
     adcSum += analogRead(PRESSURE_SENSOR_PIN);
     delay(10);
   }
-  int adcValue = adcSum / 10;
+  int adcValue = adcSum / 100;
   
   // Wasserstand in cm berechnen (lineare Interpolation)
   // Formel: wasserstand_cm = (adcValue - ADC_MIN) * WATER_LEVEL_MAX / (ADC_MAX - ADC_MIN)
@@ -332,18 +628,51 @@ void loop() {
   if (waterLevelCm < 0) waterLevelCm = 0;
   if (waterLevelCm > WATER_LEVEL_MAX) waterLevelCm = WATER_LEVEL_MAX;
   
-  // Pumpensteuerung mit Hysterese
-  if (waterLevelCm >= PUMP_ON_LEVEL && !pumpActive) {
-    // Pumpe einschalten bei >= 30 cm
-    pumpActive = true;
-    digitalWrite(PUMP_MOSFET_PIN, HIGH);
-    Serial.println(">>> PUMPE EINGESCHALTET <<<");
-  }
-  else if (waterLevelCm <= PUMP_OFF_LEVEL && pumpActive) {
-    // Pumpe ausschalten bei <= 15 cm
-    pumpActive = false;
-    digitalWrite(PUMP_MOSFET_PIN, LOW);
-    Serial.println(">>> PUMPE AUSGESCHALTET <<<");
+  // Pumpensteuerung abhängig vom Modus
+  switch (pumpMode) {
+    case MODE_AUTO:
+      // Automatische Steuerung mit Hysterese
+      if (waterLevelCm >= PUMP_ON_LEVEL && !pumpActive) {
+        // Pumpe einschalten bei >= 30 cm
+        pumpActive = true;
+        digitalWrite(PUMP_MOSFET_PIN, HIGH);
+        Serial.println(">>> PUMPE EINGESCHALTET (AUTO) <<<");
+        Serial.printf(">>> GPIO %d auf HIGH gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
+        int pinState = digitalRead(PUMP_MOSFET_PIN);
+        Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
+      }
+      else if (waterLevelCm <= PUMP_OFF_LEVEL && pumpActive) {
+        // Pumpe ausschalten bei <= 15 cm
+        pumpActive = false;
+        digitalWrite(PUMP_MOSFET_PIN, LOW);
+        Serial.println(">>> PUMPE AUSGESCHALTET (AUTO) <<<");
+        Serial.printf(">>> GPIO %d auf LOW gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
+      }
+      break;
+      
+    case MODE_MANUAL_ON:
+      // Manuell EIN: Pumpe läuft dauerhaft (ignoriert Wasserstand)
+      if (!pumpActive) {
+        pumpActive = true;
+        digitalWrite(PUMP_MOSFET_PIN, HIGH);
+        Serial.println(">>> PUMPE EINGESCHALTET (MANUELL) <<<");
+        Serial.printf(">>> GPIO %d auf HIGH gesetzt <<<\n", PUMP_MOSFET_PIN);
+        // Pin-Status überprüfen
+        int pinState = digitalRead(PUMP_MOSFET_PIN);
+        Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
+      }
+      // Im Manuell-Modus läuft die Pumpe weiter bis Button gedrückt wird
+      break;
+      
+    case MODE_MANUAL_OFF:
+      // Manuell AUS: Pumpe bleibt aus (ignoriert Wasserstand)
+      if (pumpActive) {
+        pumpActive = false;
+        digitalWrite(PUMP_MOSFET_PIN, LOW);
+        Serial.println(">>> PUMPE AUSGESCHALTET (MANUELL) <<<");
+        Serial.printf(">>> GPIO %d auf LOW gesetzt <<<\n", PUMP_MOSFET_PIN);
+      }
+      break;
   }
   
   // RRD-Daten aktualisieren (alle 5 Sekunden)
@@ -364,30 +693,28 @@ void loop() {
     sendWaterLevelData(waterLevelCm, adcValue, pumpActive);
   }
   
-  // ADC-Wert anzeigen (linke Seite, kompakt)
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.fillRect(10, 85, 230, 20, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 85);
-  tft.printf("%4d / 4095", adcValue);
+  // Display-Updates nur alle 3 Sekunden (reduziert Flackern, stabilere Anzeige)
+  if (currentTime - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
+    lastDisplayUpdate = currentTime;
   
   // Wasserstand anzeigen
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextSize(3);
-  tft.fillRect(10, 145, 230, 30, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 145);
+  tft.fillRect(10, 135, 230, 30, TFT_BLACK); // Bereich löschen
+  tft.setCursor(10, 135);
   tft.printf("%.1f cm", waterLevelCm);
   
-  // Fortschrittsbalken (kompakt)
-  int barWidth = (int)(waterLevelCm * 200 / WATER_LEVEL_MAX);
-  tft.fillRect(10, 180, 210, 20, TFT_BLACK);
-  tft.drawRect(10, 180, 210, 20, TFT_WHITE);
-  tft.fillRect(11, 181, barWidth, 18, TFT_BLUE);
+  // Fortschrittsbalken (kompakt, Maximum 50 cm)
+  int barWidth = (int)(waterLevelCm * 200 / 50.0);  // Max 50 cm statt 300 cm
+  barWidth = constrain(barWidth, 0, 200);  // Begrenzen auf Balkenbreite
+  tft.fillRect(10, 170, 210, 20, TFT_BLACK);
+  tft.drawRect(10, 170, 210, 20, TFT_WHITE);
+  tft.fillRect(11, 171, barWidth, 18, TFT_BLUE);
   
   // Pumpenstatus anzeigen
   tft.setTextSize(2);
-  tft.fillRect(90, 210, 150, 25, TFT_BLACK); // Bereich löschen
-  tft.setCursor(90, 210);
+  tft.fillRect(90, 195, 150, 25, TFT_BLACK); // Bereich löschen
+  tft.setCursor(90, 195);
   if (pumpActive) {
     tft.setTextColor(TFT_GREEN, TFT_BLACK);
     tft.println("EIN");
@@ -396,16 +723,23 @@ void loop() {
     tft.println("AUS");
   }
   
-  // Schwellwerte anzeigen
+  // Schwellwerte anzeigen (im Auto-Modus) oder Modus-Info
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setTextSize(1);
-  tft.setCursor(10, 255);
-  tft.printf("EIN: %.0fcm AUS: %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
+  tft.fillRect(10, 220, 230, 10, TFT_BLACK); // Bereich löschen
+  tft.setCursor(10, 220);
+  if (pumpMode == MODE_AUTO) {
+    tft.printf("Auto: EIN %.0fcm / AUS %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
+  } else if (pumpMode == MODE_MANUAL_ON) {
+    tft.printf("Manuell EIN - dauerhaft");
+  } else {
+    tft.printf("Manuell AUS - keine Pumpe");
+  }
   
   // ESP-NOW Status anzeigen
   tft.setTextSize(2);
-  tft.fillRect(130, 270, 110, 25, TFT_BLACK);
-  tft.setCursor(130, 270);
+  tft.fillRect(130, 255, 110, 25, TFT_BLACK);
+  tft.setCursor(130, 255);
   if (espnowInitialized) {
     if (lastSendSuccess) {
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -435,10 +769,11 @@ void loop() {
   tft.setCursor(10, 310);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.printf("Naechste Luftp.: %dm %ds  ", minutesLeft, secondsLeft);
+  } // Ende Display-Update-Block
   
   // Serielle Ausgabe
   Serial.printf("ADC: %d | Wasserstand: %.1f cm", adcValue, waterLevelCm);
   Serial.printf(" | Pumpe: %s\n", pumpActive ? "EIN" : "AUS");
   
-  delay(500); // Aktualisierung alle 500 ms
+  delay(100); // Kurze Pause zwischen Messzyklen
 }
