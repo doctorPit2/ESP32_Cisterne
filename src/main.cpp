@@ -3,6 +3,7 @@
 #include <XPT2046_Touchscreen.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <Preferences.h>
 
 // TFT Display initialisieren
 TFT_eSPI tft = TFT_eSPI();
@@ -24,6 +25,7 @@ typedef struct {
   float waterLevel;      // Wasserstand in cm
   int adcValue;          // Roher ADC-Wert
   bool pumpActive;       // Status der Wasserpumpe
+  bool pumpAlarm;        // Pumpen-Alarm bei Überschreitung
 } WaterLevelData;
 
 WaterLevelData dataToSend;
@@ -98,6 +100,18 @@ bool espnowInitialized = false;      // ESP-NOW Initialisierungsstatus
 int espnowSendCount = 0;             // Anzahl gesendeter Nachrichten
 bool lastSendSuccess = false;        // Status der letzten Übertragung
 
+// Pumpüberwachungs-Variablen
+Preferences preferences;             // Für dauerhaftes Speichern
+unsigned long pumpStartTime = 0;     // Zeitpunkt Pumpe EIN
+unsigned long pumpRunTimes[3] = {0, 0, 0}; // Array für erste 3 Messungen (in Sekunden)
+int pumpRunCount = 0;                // Anzahl der Messungen
+unsigned long pumpReferenceTime = 0; // Referenzzeit in Sekunden (Mittelwert)
+bool pumpAlarmActive = false;        // Alarm-Status
+bool pumpAlarmBlink = false;         // Blink-Status für TFT
+unsigned long lastAlarmBlink = 0;    // Zeitpunkt letztes Blinken
+#define PUMP_ALARM_THRESHOLD 1.5     // 150% der Referenzzeit
+#define ALARM_BLINK_INTERVAL 500     // Blink-Intervall in ms
+
 // ESP-NOW Callback-Funktion (wird nach dem Senden aufgerufen)
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
@@ -164,14 +178,16 @@ void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
   dataToSend.waterLevel = waterLevel;
   dataToSend.adcValue = adcValue;
   dataToSend.pumpActive = pumpActive;
+  dataToSend.pumpAlarm = pumpAlarmActive;
   
   // Daten senden
   esp_err_t result = esp_now_send(weatherStationMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
   
   if (result == ESP_OK) {
     espnowSendCount++;
-    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s)\n", 
-                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS");
+    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s)\n", 
+                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS",
+                  pumpAlarmActive ? "JA" : "NEIN");
   } else {
     Serial.println("ESP-NOW: Fehler beim Senden!");
   }
@@ -489,6 +505,19 @@ void setup() {
   // ESP-NOW initialisieren
   initESPNow();
   
+  // Pumpüberwachung: Gespeicherte Referenzzeit laden
+  preferences.begin("pumpMonitor", true); // readonly
+  pumpReferenceTime = preferences.getULong("refTime", 0);
+  pumpRunCount = preferences.getInt("runCount", 0);
+  preferences.end();
+  
+  if (pumpReferenceTime > 0) {
+    Serial.printf("Gespeicherte Referenzzeit geladen: %lu Sekunden\n", pumpReferenceTime);
+    Serial.printf("Anzahl Messungen: %d\n", pumpRunCount);
+  } else {
+    Serial.println("Keine Referenzzeit gespeichert - Lernphase startet (3 Messungen benötigt)");
+  };
+  
   // SPI Bus mit custom Pins initialisieren (MUSS vor Display UND Touch erfolgen!)
   // Diese Pins müssen mit platformio.ini übereinstimmen
   SPI.begin(14, 12, 13, -1); // SCK=14, MISO=12, MOSI=13, SS=-1 (nicht verwendet)
@@ -552,6 +581,9 @@ void setup() {
   tft.setCursor(10, 255);
   tft.println("ESP-NOW:");
   
+  tft.setCursor(10, 275);
+  tft.println("Pumpwatch:");
+  
   // Pumpen-Modus-Button zeichnen
   drawPumpModeButton();
   
@@ -571,6 +603,45 @@ void loop() {
   delay(10);
   return; // Rest des Loops überspringen
 #endif
+
+  // Alarm-Blink-Logik (roter TFT-Hintergrund)
+  if (pumpAlarmActive && (currentTime - lastAlarmBlink >= ALARM_BLINK_INTERVAL)) {
+    lastAlarmBlink = currentTime;
+    pumpAlarmBlink = !pumpAlarmBlink;
+    
+    // Hintergrund rot blinken lassen (nur beim Umschalten auf rot)
+    if (pumpAlarmBlink) {
+      tft.fillScreen(TFT_RED);
+      // Overlay-Text für Alarm
+      tft.setTextSize(3);
+      tft.setTextColor(TFT_WHITE, TFT_RED);
+      int textX = (480 - 15 * 12) / 2; // Zentrieren
+      tft.setCursor(textX, 150);
+      tft.println("PUMPEN-ALARM!");
+    } else {
+      // Zurück zu schwarz und Display neu zeichnen
+      tft.fillScreen(TFT_BLACK);
+      // Überschrift
+      tft.setTextColor(TFT_CYAN, TFT_BLACK);
+      tft.setTextSize(2);
+      tft.setCursor(10, 10);
+      tft.println("Zisternen-Monitor");
+      // Statische Beschriftungen neu zeichnen
+      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      tft.setCursor(10, 35);
+      tft.println("Pumpenmodus:");
+      tft.setCursor(10, 110);
+      tft.println("Wasserstand:");
+      tft.setCursor(10, 195);
+      tft.println("Status:");
+      tft.setCursor(10, 235);
+      tft.println("Luftpumpe:");
+      tft.setCursor(10, 255);
+      tft.println("ESP-NOW:");
+      drawPumpModeButton();
+      drawGraph();
+    }
+  }
   
   // Touch-Button überprüfen
   checkTouchButton();
@@ -635,9 +706,11 @@ void loop() {
       if (waterLevelCm >= PUMP_ON_LEVEL && !pumpActive) {
         // Pumpe einschalten bei >= 30 cm
         pumpActive = true;
+        pumpStartTime = millis(); // Timer starten
         digitalWrite(PUMP_MOSFET_PIN, HIGH);
         Serial.println(">>> PUMPE EINGESCHALTET (AUTO) <<<");
         Serial.printf(">>> GPIO %d auf HIGH gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
+        Serial.printf(">>> Timer gestartet: %lu ms <<<\n", pumpStartTime);
         int pinState = digitalRead(PUMP_MOSFET_PIN);
         Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
       }
@@ -645,8 +718,56 @@ void loop() {
         // Pumpe ausschalten bei <= 15 cm
         pumpActive = false;
         digitalWrite(PUMP_MOSFET_PIN, LOW);
+        
+        // Laufzeit berechnen (nur im AUTO-Modus für Überwachung)
+        unsigned long pumpRunTime = (millis() - pumpStartTime) / 1000; // in Sekunden
         Serial.println(">>> PUMPE AUSGESCHALTET (AUTO) <<<");
         Serial.printf(">>> GPIO %d auf LOW gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
+        Serial.printf(">>> Laufzeit: %lu Sekunden <<<\n", pumpRunTime);
+        
+        // Lernphase: Erste 3 Messungen speichern
+        if (pumpRunCount < 3) {
+          pumpRunTimes[pumpRunCount] = pumpRunTime;
+          pumpRunCount++;
+          Serial.printf(">>> Lernphase: Messung %d/3 gespeichert <<<\n", pumpRunCount);
+          
+          // Nach 3 Messungen: Mittelwert berechnen und speichern
+          if (pumpRunCount == 3) {
+            pumpReferenceTime = (pumpRunTimes[0] + pumpRunTimes[1] + pumpRunTimes[2]) / 3;
+            Serial.printf(">>> Referenzzeit berechnet: %lu Sekunden (Mittelwert aus %lu, %lu, %lu) <<<\n", 
+                         pumpReferenceTime, pumpRunTimes[0], pumpRunTimes[1], pumpRunTimes[2]);
+            
+            // Dauerhaft speichern
+            preferences.begin("pumpMonitor", false);
+            preferences.putULong("refTime", pumpReferenceTime);
+            preferences.putInt("runCount", pumpRunCount);
+            preferences.end();
+            Serial.println(">>> Referenzzeit dauerhaft gespeichert <<<");
+          }
+        }
+        // Überwachungsphase: Überprüfen ob Referenzzeit überschritten
+        else if (pumpReferenceTime > 0) {
+          unsigned long maxAllowedTime = (unsigned long)(pumpReferenceTime * PUMP_ALARM_THRESHOLD);
+          Serial.printf(">>> Überwachung: Laufzeit %lu s vs. Max erlaubt %lu s (%.0f%% von %lu s) <<<\n", 
+                       pumpRunTime, maxAllowedTime, PUMP_ALARM_THRESHOLD * 100, pumpReferenceTime);
+          
+          if (pumpRunTime > maxAllowedTime) {
+            // Alarm aktivieren
+            bool wasAlarmActive = pumpAlarmActive; // Vorheriger Status
+            pumpAlarmActive = true;
+            Serial.println("!!! ALARM: Pumpenlaufzeit überschritten !!!");
+            Serial.printf("!!! %lu s > %lu s (%.0f%% von Referenz) !!!\n", 
+                         pumpRunTime, maxAllowedTime, PUMP_ALARM_THRESHOLD * 100);
+            
+            // Sofort ESP-NOW Alarm senden (nur beim ersten Mal)
+            if (!wasAlarmActive && espnowInitialized) {
+              sendWaterLevelData(waterLevelCm, adcValue, pumpActive);
+              Serial.println(">>> ESP-NOW Alarm-Meldung sofort gesendet <<<");
+            }
+          } else {
+            pumpAlarmActive = false;
+          }
+        }
       }
       break;
       
@@ -654,6 +775,7 @@ void loop() {
       // Manuell EIN: Pumpe läuft dauerhaft (ignoriert Wasserstand)
       if (!pumpActive) {
         pumpActive = true;
+        pumpStartTime = millis(); // Timer auch im Manuell-Modus starten (für Info)
         digitalWrite(PUMP_MOSFET_PIN, HIGH);
         Serial.println(">>> PUMPE EINGESCHALTET (MANUELL) <<<");
         Serial.printf(">>> GPIO %d auf HIGH gesetzt <<<\n", PUMP_MOSFET_PIN);
