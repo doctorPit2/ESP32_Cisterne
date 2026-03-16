@@ -584,6 +584,9 @@ void setup() {
   tft.setCursor(10, 275);
   tft.println("Pumpwatch:");
   
+  tft.setCursor(10, 295);
+  tft.println("Laufzeit:");
+  
   // Pumpen-Modus-Button zeichnen
   drawPumpModeButton();
   
@@ -891,6 +894,45 @@ void loop() {
   tft.setCursor(10, 310);
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
   tft.printf("Naechste Luftp.: %dm %ds  ", minutesLeft, secondsLeft);
+  
+  // Pumpwatch-Status anzeigen
+  tft.setTextSize(2);
+  tft.fillRect(130, 275, 110, 25, TFT_BLACK);
+  tft.setCursor(130, 275);
+  if (pumpRunCount < 3) {
+    // Lernphase
+    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+    tft.printf("LERN %d/3", pumpRunCount);
+  } else if (pumpAlarmActive) {
+    // Alarm
+    tft.setTextColor(TFT_RED, TFT_BLACK);
+    tft.println("ALARM!");
+  } else {
+    // Normal überwacht
+    tft.setTextColor(TFT_GREEN, TFT_BLACK);
+    tft.println("OK");
+  }
+  
+  // Aktuelle Pumpenlaufzeit / Referenzzeit anzeigen
+  tft.setTextSize(1);
+  tft.fillRect(90, 295, 150, 10, TFT_BLACK);
+  tft.setCursor(90, 295);
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  if (pumpActive) {
+    // Laufende Zeit anzeigen
+    unsigned long currentRunTime = (millis() - pumpStartTime) / 1000;
+    int minutes = currentRunTime / 60;
+    int seconds = currentRunTime % 60;
+    tft.printf("%dm %ds", minutes, seconds);
+  } else if (pumpReferenceTime > 0) {
+    // Referenzzeit anzeigen
+    int refMinutes = pumpReferenceTime / 60;
+    int refSeconds = pumpReferenceTime % 60;
+    tft.printf("Ref: %dm %ds", refMinutes, refSeconds);
+  } else {
+    tft.print("--");
+  }
+  
   } // Ende Display-Update-Block
   
   // Serielle Ausgabe

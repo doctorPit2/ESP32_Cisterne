@@ -50,10 +50,10 @@ Lade diesen Sketch auf die **Wetterstation**, um Daten zu empfangen:
 
 // Datenstruktur (muss identisch mit Sender sein!)
 typedef struct {
-  float waterLevel;
-  int adcValue;
-  bool pumpActive;
-  unsigned long uptime;
+  float waterLevel;      // Wasserstand in cm
+  int adcValue;          // Roher ADC-Wert
+  bool pumpActive;       // Status der Wasserpumpe
+  bool pumpAlarm;        // Pumpen-Alarm bei Laufzeitüberschreitung
 } WaterLevelData;
 
 WaterLevelData receivedData;
@@ -66,7 +66,14 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   Serial.printf("Wasserstand: %.1f cm\n", receivedData.waterLevel);
   Serial.printf("ADC-Wert: %d\n", receivedData.adcValue);
   Serial.printf("Pumpe: %s\n", receivedData.pumpActive ? "EIN" : "AUS");
-  Serial.printf("Betriebszeit: %lu Sekunden\n", receivedData.uptime);
+  Serial.printf("Pumpen-Alarm: %s\n", receivedData.pumpAlarm ? "🚨 JA" : "OK");
+  
+  // ALARM-Behandlung
+  if (receivedData.pumpAlarm) {
+    Serial.println("⚠️ WARNUNG: Pumpen-Laufzeit überschritten!");
+    Serial.println("→ Filter oder Pumpe prüfen!");
+    // Hier z.B. Push-Benachrichtigung, Email, etc.
+  }
   
   // Hier kannst du die Daten weiterverarbeiten
   // z.B. auf Display anzeigen, in Datenbank speichern, etc.

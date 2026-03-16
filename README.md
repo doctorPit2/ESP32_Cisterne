@@ -8,6 +8,7 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 - **TFT-Display** (480x320, ST7796) zur Echtzeitanzeige
 - **Touch-Steuerung** mit XPT2046 Touch-Controller für manuelle Pumpensteuerung
 - **Automatische Pumpensteuerung** mit Hysterese
+- **Intelligente Pumpenüberwachung** mit Lernphase und Alarm bei Anomalien
 - **Automatischer Druckausgleich** mit Luftpumpe (alle 5 Min. für 10 Sek.)
 - Messung wird während Druckausgleich pausiert
 - **ESP-NOW Datenübertragung** zur Wetterstation (alle 15 Minuten)
@@ -80,6 +81,47 @@ Dies verhindert häufiges Ein-/Ausschalten.
 - Bei ersten Tests werden die Touch-Koordinaten im Serial Monitor angezeigt
 - Falls der Touch nicht genau funktioniert, passen Sie die `map()`-Werte an
 
+### Intelligente Pumpenüberwachung
+
+Das System überwacht automatisch die Pumpenlaufzeit und erkennt Probleme (z.B. verstopfter Filter, defekte Pumpe).
+
+#### Funktionsweise
+
+**1. Lernphase (erste 3 Pumpläufe):**
+- Bei den ersten 3 automatischen Pumpläufen wird die Laufzeit gemessen
+- Aus diesen 3 Messungen wird ein **Mittelwert** (Referenzzeit) berechnet
+- Die Referenzzeit wird **dauerhaft im Flash-Speicher** gespeichert (überlebt Neustarts)
+- Status wird über serielle Konsole ausgegeben
+
+**2. Überwachungsphase (ab 4. Pumplauf):**
+- Jede weitere Pumpenlaufzeit wird mit der Referenzzeit verglichen
+- **Alarm-Schwelle**: 150% der Referenzzeit
+- Bei Überschreitung wird ein **Alarm** ausgelöst
+
+**3. Alarm-Benachrichtigung:**
+- 🔴 **Blinkendes Display** (alle 500ms) bei aktivem Alarm
+- 📡 **Sofortige ESP-NOW Nachricht** an die Wetterstation
+- 💾 **Alarm-Status** wird im ESP-NOW Datenstrom mitgesendet
+
+#### Beispiel
+- Referenzzeit: 120 Sekunden (Mittelwert aus ersten 3 Läufen)
+- Alarm-Schwelle: 180 Sekunden (150% von 120s)
+- Wenn Pumpe > 180 Sekunden läuft → **ALARM**
+
+#### Alarm zurücksetzen
+Der Alarm wird automatisch zurückgesetzt, wenn:
+- Die nächste Pumpenlaufzeit wieder im normalen Bereich liegt
+- Das System neu gestartet wird (Referenzzeit bleibt erhalten)
+
+#### Konfiguration
+
+```cpp
+#define PUMP_ALARM_THRESHOLD 1.5     // 150% der Referenzzeit
+#define ALARM_BLINK_INTERVAL 500     // Blink-Intervall in ms
+```
+
+**Hinweis:** Die Überwachung funktioniert nur im **AUTO-Modus**, da nur dort die Pumpe vom Wasserstand gesteuert wird.
+
 ### RRD-Verlaufs-Graph
 - **Ringpuffer** mit 96 Datenpunkten (24 Stunden Historie)
 - **Sampling-Intervall**: 15 Minuten pro Datenpunkt
@@ -104,8 +146,9 @@ Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
 - Sendet alle **15 Minuten** automatisch:
   - Wasserstand in cm
   - Roher ADC-Wert
-  - Pumpenstatus
-  - Betriebszeit
+  - Pumpenstatus (EIN/AUS)
+  - **Pumpen-Alarm-Status** (bei Laufzeitüberschreitung)
+- **Sofortige Alarm-Nachricht** bei Erkennung einer Pumpenstörung
 - **Reichweite**: bis zu 200m im Freien
 - **Niedriger Stromverbrauch**
 - Status-Anzeige auf Display (OK/FEHLER, Sendezähler)
@@ -165,6 +208,52 @@ pio run --target upload
 
 ### Bibliotheken
 - TFT_eSPI (v2.5.43)
+- ThingPulse XPT2046 Touch (v1.4)
+
+## Wartung & Troubleshooting
+
+### Pumpenüberwachung zurücksetzen
+
+Wenn Sie die Pumpe ausgetauscht oder repariert haben:
+
+1. **Referenzzeit löschen** (über serielle Konsole):
+```cpp
+// Im Setup() einmalig hinzufügen:
+preferences.begin("pumpMonitor", false);
+preferences.clear();  // Alle gespeicherten Werte löschen
+preferences.end();
+```
+
+2. **Neustart** des ESP32
+3. Die **Lernphase startet automatisch** neu (erste 3 Pumpläufe)
+
+### Serielle Überwachung
+
+Öffnen Sie den Serial Monitor (115200 Baud) für detaillierte Informationen:
+- ADC-Werte und Wasserstand
+- Pumpenschaltungen mit GPIO-Status
+- Lernphase-Fortschritt (1/3, 2/3, 3/3)
+- Referenzzeit-Berechnung
+- Pumpen-Alarm mit Details
+- ESP-NOW Übertragungsstatus
+- Touch-Koordinaten (für Kalibrierung)
+
+### Häufige Probleme
+
+**Pumpen-Alarm trotz funktionierender Pumpe:**
+- Wasserstand in Zisterne ist niedriger als erwartet
+- Zulauf zur Zisterne wurde geändert
+- → Referenzzeit neu lernen lassen (siehe oben)
+
+**Touch-Button reagiert nicht:**
+- Touch-Kalibrierung in `main.cpp` anpassen
+- Aktivieren Sie `TOUCH_CALIBRATION_MODE` temporär
+- Koordinaten im Serial Monitor ablesen
+
+**ESP-NOW sendet nicht:**
+- MAC-Adresse der Wetterstation prüfen
+- Reichweite (max. 200m) beachten
+- Status auf Display kontrollieren
 
 ## Sicherheitshinweise
 
@@ -173,14 +262,17 @@ pio run --target upload
 - Falls der MPX5050 höhere Spannungen ausgibt, Spannungsteiler verwenden
 - MOSFET-Schaltung auf korrekte Dimensionierung prüfen
 - Pumpe nie trocken laufen lassen
+- **Pumpenüberwachung beachten**: Bei Alarm die Pumpe und Filter prüfen
+- Regelmäßig die ESP-NOW Verbindung zur Wetterstation kontrollieren
 
 ## Display-Ansicht
 
+**Normal-Betrieb:**
 ```
 ┌───────────────────────────────────────────────────────────┐
 │ Zisternen-Monitor                                         │
 │                                                            │
-│ ADC-Wert:              │   Verlauf (5s/Punkt)             │
+│ ADC-Wert:              │   Verlauf (15min/Punkt)          │
 │   1234 / 4095          │  30├─────────────────────────    │
 │                        │    │         ╱╲                  │
 │ Wasserstand:           │  25│      ╱─╯  ╲                 │
@@ -188,18 +280,36 @@ pio run --target upload
 │                        │  20│  ╱           ╲─╮            │
 │ [████████░░░]          │    │╱                ╲           │
 │                        │  15└──────────────────────╲──    │
-│ Pumpe: AUS             │         ← Ältere   Neue →        │
+│ [    AUTO-MODUS   ]    │         ← 24h    0h →            │
+│ Pumpe: EIN             │                                  │
 │ Luftpumpe: AUS         │                                  │
-│ ESP-NOW: OK #12        │                                  │
-│ EIN: 30cm AUS: 15cm    │                                  │
-│ Nächste ESP-NOW: 14m 23s                                  │
+│ ESP-NOW: ✓ OK #12      │                                  │
+│ Nächste ESP-NOW: 14m   │                                  │
 │ Nächste Luftp.: 4m 23s │                                  │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Lernphase (erste 3 Pumpläufe):**
+```
+│ Überwachung: LERN 2/3  │  ← Zeigt Fortschritt
+```
+
+**Alarm-Modus (rotes Blinken):**
+```
+┌───────────────────────────────────────────────────────────┐
+│                    🚨 PUMPEN-ALARM! 🚨                    │
+│                                                            │
+│ Laufzeit überschritten!                                   │
+│ → Filter prüfen                                           │
+│ → Pumpenleistung prüfen                                   │
 └───────────────────────────────────────────────────────────┘
 ```
 
 **Layout:**
 - **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, ESP-NOW, Countdowns)
-- **Rechts**: Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
+- **Rechts**: 24h-Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
+- **Button**: Farbiger Modus-Button (Blau=AUTO, Grün=MANUELL EIN, Rot=MANUELL AUS)
+- **Alarm**: Roter blinkender Bildschirm bei Pumpen-Störung
 
 ## Lizenz
 
