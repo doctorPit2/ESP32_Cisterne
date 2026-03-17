@@ -868,10 +868,10 @@ void loop() {
   if (espnowInitialized) {
     if (lastSendSuccess) {
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      tft.printf("OK #%d", espnowSendCount);
+      tft.println("OK");
     } else {
       tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-      tft.printf("OK #%d", espnowSendCount);
+      tft.println("OK");
     }
   } else {
     tft.setTextColor(TFT_RED, TFT_BLACK);
