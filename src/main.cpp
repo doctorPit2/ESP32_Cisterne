@@ -49,9 +49,9 @@ WaterLevelData dataToSend;
 #define ADC_MAX 4095       // ADC-Wert bei maximalem Wasserstand
 #define WATER_LEVEL_MAX 300 // Maximale Füllhöhe in cm (3 Meter)
 
-// Pumpensteuerung (Hysterese)
-#define PUMP_ON_LEVEL 30.0   // Pumpe EINschalten bei 30 cm
-#define PUMP_OFF_LEVEL 15.0  // Pumpe AUSschalten bei 15 cm
+// Pumpensteuerung (Hysterese) - als Variablen für Einstellung via Slider
+float pumpOnLevel = 30.0;   // Pumpe EINschalten bei 30 cm
+float pumpOffLevel = 15.0;  // Pumpe AUSschalten bei 15 cm
 
 // RRD Graph-Einstellungen
 #define GRAPH_WIDTH 220      // Breite des Graphen in Pixel
@@ -64,11 +64,26 @@ WaterLevelData dataToSend;
 #define SAMPLE_INTERVAL 900000 // Messintervall in ms (15 Minuten)
 #define DISPLAY_UPDATE_INTERVAL 3000 // Display-Update alle 3 Sekunden
 
-// Touch-Button für manuelle Pumpensteuerung
+// Touch-Buttons für manuelle Pumpensteuerung und Seitenwechsel
 #define BUTTON_X 10
 #define BUTTON_Y 60
 #define BUTTON_W 230
 #define BUTTON_H 40
+
+// Seitenwechsel-Button (oben rechts)
+#define PAGE_BTN_X 380
+#define PAGE_BTN_Y 10
+#define PAGE_BTN_W 90
+#define PAGE_BTN_H 35
+
+// Slider-Definitionen
+#define SLIDER_X 120
+#define SLIDER_Y_ON 80
+#define SLIDER_Y_OFF 140
+#define SLIDER_W 300
+#define SLIDER_H 30
+#define SLIDER_MIN 10.0
+#define SLIDER_MAX 50.0
 
 // Touch-Support aktivieren
 #define TOUCH_ENABLED true
@@ -88,6 +103,15 @@ float graphData[GRAPH_SAMPLES]; // Ringpuffer für Messwerte
 int graphIndex = 0;              // Aktueller Index im Ringpuffer
 unsigned long lastSampleTime = 0; // Zeitpunkt der letzten Messung
 unsigned long lastDisplayUpdate = 0; // Zeitpunkt des letzten Display-Updates
+
+// Display-Seiten
+enum DisplayPage {
+  PAGE_MAIN,       // Hauptansicht: Monitor, Wasserstand, Status
+  PAGE_SETTINGS    // Einstellungen: Parameter, Slider
+};
+DisplayPage currentPage = PAGE_MAIN;
+bool sliderDragging = false;
+int draggedSlider = 0; // 1 = ON_LEVEL, 2 = OFF_LEVEL
 
 // Luftpumpen-Variablen
 unsigned long lastAirPumpTime = 0;  // Letzter Start der Luftpumpe
@@ -231,6 +255,174 @@ void drawPumpModeButton() {
   tft.println(buttonText);
 }
 
+// Funktion zum Zeichnen des Verlaufs-Graphen
+void drawGraph() {
+  // Graph-Hintergrund und Rahmen
+  tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_BLACK);
+  tft.drawRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_WHITE);
+  
+  // Horizontale Gitterlinien (15, 20, 25, 30 cm)
+  tft.setTextSize(1);
+  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+  for (int i = 0; i <= 3; i++) {
+    float level = GRAPH_MIN + i * 5.0;
+    int y = GRAPH_Y + GRAPH_HEIGHT - (int)((level - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+    tft.drawLine(GRAPH_X + 1, y, GRAPH_X + GRAPH_WIDTH - 1, y, TFT_DARKGREY);
+    // Y-Achsen-Beschriftung
+    tft.setCursor(GRAPH_X + 3, y - 4);
+    tft.printf("%.0f", level);
+  }
+  
+  // X-Achsen-Beschriftung (Stunden)
+  // Zeitachse von links (24h) nach rechts (0h = jetzt)
+  for (int h = 0; h <= 24; h += 4) {
+    int x = GRAPH_X + (GRAPH_WIDTH * (24 - h)) / 24;
+    tft.drawLine(x, GRAPH_Y + GRAPH_HEIGHT - 1, x, GRAPH_Y + GRAPH_HEIGHT + 3, TFT_DARKGREY);
+    tft.setCursor(x - 6, GRAPH_Y + GRAPH_HEIGHT + 5);
+    tft.printf("%dh", h);
+  }
+  
+  // Pumpen-Schwellwerte hervorheben
+  int pumpOnY = GRAPH_Y + GRAPH_HEIGHT - (int)((pumpOnLevel - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+  int pumpOffY = GRAPH_Y + GRAPH_HEIGHT - (int)((pumpOffLevel - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+  tft.drawLine(GRAPH_X + 1, pumpOnY, GRAPH_X + GRAPH_WIDTH - 1, pumpOnY, TFT_GREEN);
+  tft.drawLine(GRAPH_X + 1, pumpOffY, GRAPH_X + GRAPH_WIDTH - 1, pumpOffY, TFT_RED);
+  
+  // Datenpunkte zeichnen
+  for (int i = 1; i < GRAPH_SAMPLES; i++) {
+    int idx1 = (graphIndex + i - 1) % GRAPH_SAMPLES;
+    int idx2 = (graphIndex + i) % GRAPH_SAMPLES;
+    
+    // Nur zeichnen, wenn Werte gültig sind (nicht initial 0)
+    if (graphData[idx1] >= GRAPH_MIN || graphData[idx2] >= GRAPH_MIN) {
+      // Werte auf Graph-Bereich begrenzen
+      float val1 = constrain(graphData[idx1], GRAPH_MIN, GRAPH_MAX);
+      float val2 = constrain(graphData[idx2], GRAPH_MIN, GRAPH_MAX);
+      
+      // Y-Position berechnen (invertiert, da 0 oben ist)
+      int y1 = GRAPH_Y + GRAPH_HEIGHT - (int)((val1 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+      int y2 = GRAPH_Y + GRAPH_HEIGHT - (int)((val2 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
+      
+      // Linie zwischen Punkten zeichnen
+      tft.drawLine(GRAPH_X + i - 1, y1, GRAPH_X + i, y2, TFT_CYAN);
+    }
+  }
+  
+  // Graph-Titel
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setTextSize(1);
+  tft.setCursor(GRAPH_X + 20, GRAPH_Y - 12);
+  tft.println("Verlauf (24h)");
+}
+
+// Funktion zum Zeichnen des Seitenwechsel-Buttons
+void drawPageButton() {
+  uint16_t bgColor = TFT_DARKGREY;
+  uint16_t textColor = TFT_WHITE;
+  const char* buttonText = (currentPage == PAGE_MAIN) ? "SETUP >" : "< MAIN";
+  
+  tft.fillRoundRect(PAGE_BTN_X, PAGE_BTN_Y, PAGE_BTN_W, PAGE_BTN_H, 6, bgColor);
+  tft.drawRoundRect(PAGE_BTN_X, PAGE_BTN_Y, PAGE_BTN_W, PAGE_BTN_H, 6, TFT_WHITE);
+  
+  tft.setTextColor(textColor, bgColor);
+  tft.setTextSize(2);
+  int textWidth = strlen(buttonText) * 12;
+  int textX = PAGE_BTN_X + (PAGE_BTN_W - textWidth) / 2;
+  int textY = PAGE_BTN_Y + (PAGE_BTN_H - 16) / 2;
+  tft.setCursor(textX, textY);
+  tft.println(buttonText);
+}
+
+// Funktion zum Zeichnen eines Sliders
+void drawSlider(int sliderNum, float value, const char* label) {
+  int yPos = (sliderNum == 1) ? SLIDER_Y_ON : SLIDER_Y_OFF;
+  
+  // Label
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setCursor(10, yPos + 5);
+  tft.println(label);
+  
+  // Slider-Hintergrund
+  tft.fillRect(SLIDER_X, yPos, SLIDER_W, SLIDER_H, TFT_DARKGREY);
+  tft.drawRect(SLIDER_X, yPos, SLIDER_W, SLIDER_H, TFT_WHITE);
+  
+  // Slider-Füllung (Wert)
+  int fillWidth = (int)((value - SLIDER_MIN) * SLIDER_W / (SLIDER_MAX - SLIDER_MIN));
+  fillWidth = constrain(fillWidth, 0, SLIDER_W);
+  uint16_t fillColor = (sliderNum == 1) ? TFT_GREEN : TFT_RED;
+  tft.fillRect(SLIDER_X + 1, yPos + 1, fillWidth - 1, SLIDER_H - 2, fillColor);
+  
+  // Wert anzeigen
+  tft.setTextSize(2);
+  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+  tft.setCursor(SLIDER_X + SLIDER_W + 10, yPos + 5);
+  tft.printf("%.1f cm  ", value);
+}
+
+// Seite 1: Hauptansicht zeichnen
+void drawMainPage() {
+  tft.fillScreen(TFT_BLACK);
+  
+  // Überschrift
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.println("Zisternen-Monitor");
+  
+  // Pumpen-Modus-Button
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(10, 35);
+  tft.println("Pumpenmodus:");
+  drawPumpModeButton();
+  
+  // Wasserstand
+  tft.setCursor(10, 110);
+  tft.println("Wasserstand:");
+  
+  // Status
+  tft.setCursor(10, 195);
+  tft.println("Status:");
+  
+  // Graph zeichnen
+  drawGraph();
+  
+  // Seitenwechsel-Button
+  drawPageButton();
+}
+
+// Seite 2: Einstellungen zeichnen
+void drawSettingsPage() {
+  tft.fillScreen(TFT_BLACK);
+  
+  // Überschrift
+  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextSize(2);
+  tft.setCursor(10, 10);
+  tft.println("Einstellungen");
+  
+  // Slider zeichnen
+  drawSlider(1, pumpOnLevel, "EIN:");
+  drawSlider(2, pumpOffLevel, "AUS:");
+  
+  // Parameter-Infos
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.setTextSize(2);
+  
+  tft.setCursor(10, 200);
+  tft.println("Luftpumpe:");
+  
+  tft.setCursor(10, 235);
+  tft.println("ESP-NOW:");
+  
+  tft.setCursor(10, 270);
+  tft.println("Pumpwatch:");
+  
+  // Seitenwechsel-Button
+  drawPageButton();
+}
+
 // Touch-Kalibrierungsmodus mit visueller Anzeige
 void touchCalibrationMode() {
   static bool screenInitialized = false;
@@ -343,58 +535,163 @@ void touchCalibrationMode() {
   }
 }
 
-// Touch-Handling für Pumpen-Modus-Button
+// Touch-Handling für Pumpen-Modus-Button, Seitenwechsel und Slider
 void checkTouchButton() {
 #if TOUCH_ENABLED
   // Prüfen ob Display berührt wurde
   if (touch.touched()) {
     TS_Point p = touch.getPoint();
     
-    // Debug: Raw-Werte ausgeben
-    Serial.printf("Touch RAW: x=%d, y=%d, z=%d\n", p.x, p.y, p.z);
-    
     // Touch-Koordinaten mappen (Achsen invertiert wegen Spiegelung)
-    int displayX = map(p.x, 3700, 300, 0, 480);  // Min/Max getauscht = invertiert
-    int displayY = map(p.y, 3600, 400, 0, 320);  // Min/Max getauscht = invertiert
+    int displayX = map(p.x, 3700, 300, 0, 480);
+    int displayY = map(p.y, 3600, 400, 0, 320);
     
     // Begrenzung auf gültige Display-Bereiche
     displayX = constrain(displayX, 0, 480);
     displayY = constrain(displayY, 0, 320);
     
-    // Debug-Ausgabe mit Button-Info
-    Serial.printf("Touch MAPPED: x=%d, y=%d (Button: %d-%d, %d-%d)\n", 
-                  displayX, displayY, BUTTON_X, BUTTON_X+BUTTON_W, BUTTON_Y, BUTTON_Y+BUTTON_H);
+    Serial.printf("Touch: x=%d, y=%d\n", displayX, displayY);
     
-    // Prüfen ob Touch im Button-Bereich
-    if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
-        displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
+    // Seitenwechsel-Button prüfen
+    if (displayX >= PAGE_BTN_X && displayX <= (PAGE_BTN_X + PAGE_BTN_W) &&
+        displayY >= PAGE_BTN_Y && displayY <= (PAGE_BTN_Y + PAGE_BTN_H)) {
       
-      Serial.println("Touch im Button-Bereich!");
+      Serial.println("Seitenwechsel!");
+      currentPage = (currentPage == PAGE_MAIN) ? PAGE_SETTINGS : PAGE_MAIN;
       
-      // Modus umschalten
-      switch (pumpMode) {
-        case MODE_AUTO:
-          pumpMode = MODE_MANUAL_ON;
-          Serial.println(">>> PUMPE MANUELL EIN <<<");
-          break;
-        case MODE_MANUAL_ON:
-          pumpMode = MODE_MANUAL_OFF;
-          Serial.println(">>> PUMPE MANUELL AUS <<<");
-          break;
-        case MODE_MANUAL_OFF:
-          pumpMode = MODE_AUTO;
-          Serial.println(">>> PUMPE AUTO-MODUS <<<");
-          break;
+      // Seite komplett neu zeichnen
+      if (currentPage == PAGE_MAIN) {
+        drawMainPage();
+      } else {
+        drawSettingsPage();
       }
-      
-      // Button neu zeichnen
-      drawPumpModeButton();
       
       // Warten bis Touch losgelassen wird
       while (touch.touched()) {
         delay(10);
       }
-      delay(100); // Zusätzliche Entprellung
+      delay(100);
+      return;
+    }
+    
+    // Hauptseite: Pumpen-Modus-Button prüfen
+    if (currentPage == PAGE_MAIN) {
+      if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
+          displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
+        
+        Serial.println("Pumpenmodus-Button!");
+        
+        // Modus umschalten
+        switch (pumpMode) {
+          case MODE_AUTO:
+            pumpMode = MODE_MANUAL_ON;
+            Serial.println(">>> PUMPE MANUELL EIN <<<");
+            break;
+          case MODE_MANUAL_ON:
+            pumpMode = MODE_MANUAL_OFF;
+            Serial.println(">>> PUMPE MANUELL AUS <<<");
+            break;
+          case MODE_MANUAL_OFF:
+            pumpMode = MODE_AUTO;
+            Serial.println(">>> PUMPE AUTO-MODUS <<<");
+            break;
+        }
+        
+        // Button neu zeichnen
+        drawPumpModeButton();
+        
+        // Warten bis Touch losgelassen wird
+        while (touch.touched()) {
+          delay(10);
+        }
+        delay(100);
+      }
+    }
+    
+    // Einstellungsseite: Slider prüfen
+    if (currentPage == PAGE_SETTINGS) {
+      // Slider 1 (EIN-Level)
+      if (displayX >= SLIDER_X && displayX <= (SLIDER_X + SLIDER_W) &&
+          displayY >= SLIDER_Y_ON && displayY <= (SLIDER_Y_ON + SLIDER_H)) {
+        
+        sliderDragging = true;
+        draggedSlider = 1;
+        
+        // Wert aus Position berechnen
+        int sliderPos = displayX - SLIDER_X;
+        pumpOnLevel = SLIDER_MIN + (sliderPos * (SLIDER_MAX - SLIDER_MIN) / SLIDER_W);
+        pumpOnLevel = constrain(pumpOnLevel, SLIDER_MIN, SLIDER_MAX);
+        
+        // Sicherstellen dass EIN-Level über AUS-Level liegt
+        if (pumpOnLevel <= pumpOffLevel) {
+          pumpOnLevel = pumpOffLevel + 1.0;
+        }
+        
+        drawSlider(1, pumpOnLevel, "EIN:");
+        Serial.printf("Slider EIN: %.1f cm\n", pumpOnLevel);
+      }
+      
+      // Slider 2 (AUS-Level)
+      if (displayX >= SLIDER_X && displayX <= (SLIDER_X + SLIDER_W) &&
+          displayY >= SLIDER_Y_OFF && displayY <= (SLIDER_Y_OFF + SLIDER_H)) {
+        
+        sliderDragging = true;
+        draggedSlider = 2;
+        
+        // Wert aus Position berechnen
+        int sliderPos = displayX - SLIDER_X;
+        pumpOffLevel = SLIDER_MIN + (sliderPos * (SLIDER_MAX - SLIDER_MIN) / SLIDER_W);
+        pumpOffLevel = constrain(pumpOffLevel, SLIDER_MIN, SLIDER_MAX);
+        
+        // Sicherstellen dass AUS-Level unter EIN-Level liegt
+        if (pumpOffLevel >= pumpOnLevel) {
+          pumpOffLevel = pumpOnLevel - 1.0;
+        }
+        
+        drawSlider(2, pumpOffLevel, "AUS:");
+        Serial.printf("Slider AUS: %.1f cm\n", pumpOffLevel);
+      }
+      
+      // Während Dragging: Position kontinuierlich aktualisieren
+      while (touch.touched() && sliderDragging) {
+        TS_Point p2 = touch.getPoint();
+        int newX = map(p2.x, 3700, 300, 0, 480);
+        newX = constrain(newX, 0, 480);
+        
+        if (newX >= SLIDER_X && newX <= (SLIDER_X + SLIDER_W)) {
+          int sliderPos = newX - SLIDER_X;
+          float newValue = SLIDER_MIN + (sliderPos * (SLIDER_MAX - SLIDER_MIN) / SLIDER_W);
+          newValue = constrain(newValue, SLIDER_MIN, SLIDER_MAX);
+          
+          if (draggedSlider == 1) {
+            if (newValue > pumpOffLevel) {
+              pumpOnLevel = newValue;
+              drawSlider(1, pumpOnLevel, "EIN:");
+            }
+          } else if (draggedSlider == 2) {
+            if (newValue < pumpOnLevel) {
+              pumpOffLevel = newValue;
+              drawSlider(2, pumpOffLevel, "AUS:");
+            }
+          }
+        }
+        delay(50);
+      }
+      
+      // Wenn Slider losgelassen: Werte speichern
+      if (sliderDragging) {
+        sliderDragging = false;
+        draggedSlider = 0;
+        
+        // Werte in Preferences speichern
+        preferences.begin("pumpSettings", false);
+        preferences.putFloat("onLevel", pumpOnLevel);
+        preferences.putFloat("offLevel", pumpOffLevel);
+        preferences.end();
+        
+        Serial.printf("Schwellwerte gespeichert: EIN=%.1f cm, AUS=%.1f cm\n", 
+                     pumpOnLevel, pumpOffLevel);
+      }
     }
   }
 #else
@@ -421,66 +718,6 @@ void checkTouchButton() {
     }
   }
 #endif
-}
-
-// Funktion zum Zeichnen des Verlaufs-Graphen
-void drawGraph() {
-  // Graph-Hintergrund und Rahmen
-  tft.fillRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_BLACK);
-  tft.drawRect(GRAPH_X, GRAPH_Y, GRAPH_WIDTH, GRAPH_HEIGHT, TFT_WHITE);
-  
-  // Horizontale Gitterlinien (15, 20, 25, 30 cm)
-  tft.setTextSize(1);
-  tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-  for (int i = 0; i <= 3; i++) {
-    float level = GRAPH_MIN + i * 5.0;
-    int y = GRAPH_Y + GRAPH_HEIGHT - (int)((level - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
-    tft.drawLine(GRAPH_X + 1, y, GRAPH_X + GRAPH_WIDTH - 1, y, TFT_DARKGREY);
-    // Y-Achsen-Beschriftung
-    tft.setCursor(GRAPH_X + 3, y - 4);
-    tft.printf("%.0f", level);
-  }
-  
-  // X-Achsen-Beschriftung (Stunden)
-  // Zeitachse von links (24h) nach rechts (0h = jetzt)
-  for (int h = 0; h <= 24; h += 4) {
-    int x = GRAPH_X + (GRAPH_WIDTH * (24 - h)) / 24;
-    tft.drawLine(x, GRAPH_Y + GRAPH_HEIGHT - 1, x, GRAPH_Y + GRAPH_HEIGHT + 3, TFT_DARKGREY);
-    tft.setCursor(x - 6, GRAPH_Y + GRAPH_HEIGHT + 5);
-    tft.printf("%dh", h);
-  }
-  
-  // Pumpen-Schwellwerte hervorheben
-  int pumpOnY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_ON_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
-  int pumpOffY = GRAPH_Y + GRAPH_HEIGHT - (int)((PUMP_OFF_LEVEL - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
-  tft.drawLine(GRAPH_X + 1, pumpOnY, GRAPH_X + GRAPH_WIDTH - 1, pumpOnY, TFT_GREEN);
-  tft.drawLine(GRAPH_X + 1, pumpOffY, GRAPH_X + GRAPH_WIDTH - 1, pumpOffY, TFT_RED);
-  
-  // Datenpunkte zeichnen
-  for (int i = 1; i < GRAPH_SAMPLES; i++) {
-    int idx1 = (graphIndex + i - 1) % GRAPH_SAMPLES;
-    int idx2 = (graphIndex + i) % GRAPH_SAMPLES;
-    
-    // Nur zeichnen, wenn Werte gültig sind (nicht initial 0)
-    if (graphData[idx1] >= GRAPH_MIN || graphData[idx2] >= GRAPH_MIN) {
-      // Werte auf Graph-Bereich begrenzen
-      float val1 = constrain(graphData[idx1], GRAPH_MIN, GRAPH_MAX);
-      float val2 = constrain(graphData[idx2], GRAPH_MIN, GRAPH_MAX);
-      
-      // Y-Position berechnen (invertiert, da 0 oben ist)
-      int y1 = GRAPH_Y + GRAPH_HEIGHT - (int)((val1 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
-      int y2 = GRAPH_Y + GRAPH_HEIGHT - (int)((val2 - GRAPH_MIN) * GRAPH_HEIGHT / (GRAPH_MAX - GRAPH_MIN));
-      
-      // Linie zwischen Punkten zeichnen
-      tft.drawLine(GRAPH_X + i - 1, y1, GRAPH_X + i, y2, TFT_CYAN);
-    }
-  }
-  
-  // Graph-Titel
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(1);
-  tft.setCursor(GRAPH_X + 20, GRAPH_Y - 12);
-  tft.println("Verlauf (24h)");
 }
 
 void setup() {
@@ -517,6 +754,13 @@ void setup() {
   } else {
     Serial.println("Keine Referenzzeit gespeichert - Lernphase startet (3 Messungen benötigt)");
   };
+  
+  // Pumpen-Schwellwerte laden
+  preferences.begin("pumpSettings", true); // readonly
+  pumpOnLevel = preferences.getFloat("onLevel", 30.0);
+  pumpOffLevel = preferences.getFloat("offLevel", 15.0);
+  preferences.end();
+  Serial.printf("Schwellwerte geladen: EIN=%.1f cm, AUS=%.1f cm\n", pumpOnLevel, pumpOffLevel);
   
   // SPI Bus mit custom Pins initialisieren (MUSS vor Display UND Touch erfolgen!)
   // Diese Pins müssen mit platformio.ini übereinstimmen
@@ -556,42 +800,8 @@ void setup() {
   Serial.println("*** TOUCH KALIBRIERUNGSMODUS AKTIV ***");
   Serial.println("*** Setze TOUCH_CALIBRATION_MODE auf false nach Kalibrierung ***");
 #else
-  // Normale Anzeige
-  // Überschrift
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(10, 10);
-  tft.println("Zisternen-Monitor");
-  
-  // Statische Beschriftungen (linke Seite)
-  tft.setTextColor(TFT_WHITE, TFT_BLACK);
-  tft.setTextSize(2);
-  tft.setCursor(10, 35);
-  tft.println("Pumpenmodus:");
-  
-  tft.setCursor(10, 110);
-  tft.println("Wasserstand:");
-  
-  tft.setCursor(10, 195);
-  tft.println("Status:");
-  
-  tft.setCursor(10, 235);
-  tft.println("Luftpumpe:");
-  
-  tft.setCursor(10, 255);
-  tft.println("ESP-NOW:");
-  
-  tft.setCursor(10, 275);
-  tft.println("Pumpwatch:");
-  
-  tft.setCursor(10, 295);
-  tft.println("Laufzeit:");
-  
-  // Pumpen-Modus-Button zeichnen
-  drawPumpModeButton();
-  
-  // Initialen Graph zeichnen
-  drawGraph();
+  // Hauptseite initial zeichnen
+  drawMainPage();
 #endif
   
   Serial.println("Display initialisiert!");
@@ -622,27 +832,12 @@ void loop() {
       tft.setCursor(textX, 150);
       tft.println("PUMPEN-ALARM!");
     } else {
-      // Zurück zu schwarz und Display neu zeichnen
-      tft.fillScreen(TFT_BLACK);
-      // Überschrift
-      tft.setTextColor(TFT_CYAN, TFT_BLACK);
-      tft.setTextSize(2);
-      tft.setCursor(10, 10);
-      tft.println("Zisternen-Monitor");
-      // Statische Beschriftungen neu zeichnen
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
-      tft.setCursor(10, 35);
-      tft.println("Pumpenmodus:");
-      tft.setCursor(10, 110);
-      tft.println("Wasserstand:");
-      tft.setCursor(10, 195);
-      tft.println("Status:");
-      tft.setCursor(10, 235);
-      tft.println("Luftpumpe:");
-      tft.setCursor(10, 255);
-      tft.println("ESP-NOW:");
-      drawPumpModeButton();
-      drawGraph();
+      // Zurück zur aktuellen Seite
+      if (currentPage == PAGE_MAIN) {
+        drawMainPage();
+      } else {
+        drawSettingsPage();
+      }
     }
   }
   
@@ -657,13 +852,6 @@ void loop() {
     lastAirPumpTime = currentTime;
     digitalWrite(AIR_PUMP_PIN, HIGH);
     Serial.println(">>> LUFTPUMPE GESTARTET (Druckausgleich) <<<");
-    
-    // Status auf Display aktualisieren
-    tft.setTextSize(2);
-    tft.fillRect(130, 235, 110, 25, TFT_BLACK);
-    tft.setCursor(130, 235);
-    tft.setTextColor(TFT_ORANGE, TFT_BLACK);
-    tft.println("AKTIV");
   }
   
   // Luftpumpe nach 10 Sekunden ausschalten
@@ -671,13 +859,6 @@ void loop() {
     airPumpActive = false;
     digitalWrite(AIR_PUMP_PIN, LOW);
     Serial.println(">>> LUFTPUMPE GESTOPPT <<<");
-    
-    // Status auf Display aktualisieren
-    tft.setTextSize(2);
-    tft.fillRect(130, 235, 110, 25, TFT_BLACK);
-    tft.setCursor(130, 235);
-    tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
-    tft.println("AUS");
   }
   
   // Messung überspringen, wenn Luftpumpe aktiv ist
@@ -706,8 +887,8 @@ void loop() {
   switch (pumpMode) {
     case MODE_AUTO:
       // Automatische Steuerung mit Hysterese
-      if (waterLevelCm >= PUMP_ON_LEVEL && !pumpActive) {
-        // Pumpe einschalten bei >= 30 cm
+      if (waterLevelCm >= pumpOnLevel && !pumpActive) {
+        // Pumpe einschalten bei >= pumpOnLevel cm
         pumpActive = true;
         pumpStartTime = millis(); // Timer starten
         digitalWrite(PUMP_MOSFET_PIN, HIGH);
@@ -717,8 +898,8 @@ void loop() {
         int pinState = digitalRead(PUMP_MOSFET_PIN);
         Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
       }
-      else if (waterLevelCm <= PUMP_OFF_LEVEL && pumpActive) {
-        // Pumpe ausschalten bei <= 15 cm
+      else if (waterLevelCm <= pumpOffLevel && pumpActive) {
+        // Pumpe ausschalten bei <= pumpOffLevel cm
         pumpActive = false;
         digitalWrite(PUMP_MOSFET_PIN, LOW);
         
@@ -808,8 +989,10 @@ void loop() {
     graphData[graphIndex] = waterLevelCm;
     graphIndex = (graphIndex + 1) % GRAPH_SAMPLES;
     
-    // Graph neu zeichnen
-    drawGraph();
+    // Graph neu zeichnen (nur auf der Hauptseite)
+    if (currentPage == PAGE_MAIN) {
+      drawGraph();
+    }
   }
   
   // ESP-NOW Daten senden (alle 15 Minuten)
@@ -822,117 +1005,132 @@ void loop() {
   if (currentTime - lastDisplayUpdate >= DISPLAY_UPDATE_INTERVAL) {
     lastDisplayUpdate = currentTime;
   
-  // Wasserstand anzeigen
-  tft.setTextColor(TFT_GREEN, TFT_BLACK);
-  tft.setTextSize(3);
-  tft.fillRect(10, 135, 230, 30, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 135);
-  tft.printf("%.1f cm", waterLevelCm);
-  
-  // Fortschrittsbalken (kompakt, Maximum 50 cm)
-  int barWidth = (int)(waterLevelCm * 200 / 50.0);  // Max 50 cm statt 300 cm
-  barWidth = constrain(barWidth, 0, 200);  // Begrenzen auf Balkenbreite
-  tft.fillRect(10, 170, 210, 20, TFT_BLACK);
-  tft.drawRect(10, 170, 210, 20, TFT_WHITE);
-  tft.fillRect(11, 171, barWidth, 18, TFT_BLUE);
-  
-  // Pumpenstatus anzeigen
-  tft.setTextSize(2);
-  tft.fillRect(90, 195, 150, 25, TFT_BLACK); // Bereich löschen
-  tft.setCursor(90, 195);
-  if (pumpActive) {
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.println("EIN");
-  } else {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("AUS");
-  }
-  
-  // Schwellwerte anzeigen (im Auto-Modus) oder Modus-Info
-  tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setTextSize(1);
-  tft.fillRect(10, 220, 230, 10, TFT_BLACK); // Bereich löschen
-  tft.setCursor(10, 220);
-  if (pumpMode == MODE_AUTO) {
-    tft.printf("Auto: EIN %.0fcm / AUS %.0fcm", PUMP_ON_LEVEL, PUMP_OFF_LEVEL);
-  } else if (pumpMode == MODE_MANUAL_ON) {
-    tft.printf("Manuell EIN - dauerhaft");
-  } else {
-    tft.printf("Manuell AUS - keine Pumpe");
-  }
-  
-  // ESP-NOW Status anzeigen
-  tft.setTextSize(2);
-  tft.fillRect(130, 255, 110, 25, TFT_BLACK);
-  tft.setCursor(130, 255);
-  if (espnowInitialized) {
-    if (lastSendSuccess) {
+    // HAUPTSEITE: Wasserstand, Status, Fortschrittsbalken
+    if (currentPage == PAGE_MAIN) {
+      // Wasserstand anzeigen
       tft.setTextColor(TFT_GREEN, TFT_BLACK);
-      tft.println("OK");
-    } else {
-      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-      tft.println("OK");
+      tft.setTextSize(3);
+      tft.fillRect(10, 135, 230, 30, TFT_BLACK);
+      tft.setCursor(10, 135);
+      tft.printf("%.1f cm", waterLevelCm);
+      
+      // Fortschrittsbalken (kompakt, Maximum 50 cm)
+      int barWidth = (int)(waterLevelCm * 200 / 50.0);
+      barWidth = constrain(barWidth, 0, 200);
+      tft.fillRect(10, 170, 210, 20, TFT_BLACK);
+      tft.drawRect(10, 170, 210, 20, TFT_WHITE);
+      tft.fillRect(11, 171, barWidth, 18, TFT_BLUE);
+      
+      // Pumpenstatus anzeigen
+      tft.setTextSize(2);
+      tft.fillRect(90, 195, 150, 25, TFT_BLACK);
+      tft.setCursor(90, 195);
+      if (pumpActive) {
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.println("EIN");
+      } else {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.println("AUS");
+      }
     }
-  } else {
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("FEHLER");
-  }
-  
-  // Nächste ESP-NOW Übertragung anzeigen
-  unsigned long nextESPNow = ESPNOW_SEND_INTERVAL - (currentTime - lastESPNowSend);
-  int minutesLeftESPNow = nextESPNow / 60000;
-  int secondsLeftESPNow = (nextESPNow % 60000) / 1000;
-  tft.setTextSize(1);
-  tft.setCursor(10, 300);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.printf("Naechste ESP-NOW: %dm %ds  ", minutesLeftESPNow, secondsLeftESPNow);
-  
-  // Nächste Luftpumpen-Aktivierung anzeigen
-  unsigned long nextAirPump = AIR_PUMP_INTERVAL - (currentTime - lastAirPumpTime);
-  int minutesLeft = nextAirPump / 60000;
-  int secondsLeft = (nextAirPump % 60000) / 1000;
-  tft.setCursor(10, 310);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.printf("Naechste Luftp.: %dm %ds  ", minutesLeft, secondsLeft);
-  
-  // Pumpwatch-Status anzeigen
-  tft.setTextSize(2);
-  tft.fillRect(130, 275, 110, 25, TFT_BLACK);
-  tft.setCursor(130, 275);
-  if (pumpRunCount < 3) {
-    // Lernphase
-    tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-    tft.printf("LERN %d/3", pumpRunCount);
-  } else if (pumpAlarmActive) {
-    // Alarm
-    tft.setTextColor(TFT_RED, TFT_BLACK);
-    tft.println("ALARM!");
-  } else {
-    // Normal überwacht
-    tft.setTextColor(TFT_GREEN, TFT_BLACK);
-    tft.println("OK");
-  }
-  
-  // Aktuelle Pumpenlaufzeit / Referenzzeit anzeigen
-  tft.setTextSize(1);
-  tft.fillRect(90, 295, 150, 10, TFT_BLACK);
-  tft.setCursor(90, 295);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  if (pumpActive) {
-    // Laufende Zeit anzeigen
-    unsigned long currentRunTime = (millis() - pumpStartTime) / 1000;
-    int minutes = currentRunTime / 60;
-    int seconds = currentRunTime % 60;
-    tft.printf("%dm %ds", minutes, seconds);
-  } else if (pumpReferenceTime > 0) {
-    // Referenzzeit anzeigen
-    int refMinutes = pumpReferenceTime / 60;
-    int refSeconds = pumpReferenceTime % 60;
-    tft.printf("Ref: %dm %ds", refMinutes, refSeconds);
-  } else {
-    tft.print("--");
-  }
-  
+    
+    // EINSTELLUNGSSEITE: Luftpumpe, ESP-NOW, Pumpwatch
+    else if (currentPage == PAGE_SETTINGS) {
+      // Luftpumpen-Status
+      tft.setTextSize(2);
+      tft.fillRect(150, 200, 110, 25, TFT_BLACK);
+      tft.setCursor(150, 200);
+      if (airPumpActive) {
+        tft.setTextColor(TFT_ORANGE, TFT_BLACK);
+        tft.println("AKTIV");
+      } else {
+        tft.setTextColor(TFT_DARKGREY, TFT_BLACK);
+        tft.println("AUS");
+      }
+      
+      // Nächste Luftpumpen-Aktivierung
+      unsigned long nextAirPump = AIR_PUMP_INTERVAL - (currentTime - lastAirPumpTime);
+      int minAir = nextAirPump / 60000;
+      int secAir = (nextAirPump % 60000) / 1000;
+      tft.setTextSize(1);
+      tft.fillRect(270, 205, 100, 15, TFT_BLACK);
+      tft.setCursor(270, 205);
+      tft.setTextColor(TFT_CYAN, TFT_BLACK);
+      tft.printf("%dm %ds", minAir, secAir);
+      
+      // ESP-NOW Status
+      tft.setTextSize(2);
+      tft.fillRect(150, 235, 110, 25, TFT_BLACK);
+      tft.setCursor(150, 235);
+      if (espnowInitialized) {
+        if (lastSendSuccess) {
+          tft.setTextColor(TFT_GREEN, TFT_BLACK);
+          tft.println("OK");
+        } else {
+          tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+          tft.println("INIT");
+        }
+      } else {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.println("FEHLER");
+      }
+      
+      // Nächste ESP-NOW Übertragung
+      unsigned long nextESPNow = ESPNOW_SEND_INTERVAL - (currentTime - lastESPNowSend);
+      int minESP = nextESPNow / 60000;
+      int secESP = (nextESPNow % 60000) / 1000;
+      tft.setTextSize(1);
+      tft.fillRect(270, 240, 100, 15, TFT_BLACK);
+      tft.setCursor(270, 240);
+      tft.setTextColor(TFT_CYAN, TFT_BLACK);
+      tft.printf("%dm %ds", minESP, secESP);
+      
+      // Pumpwatch-Status
+      tft.setTextSize(2);
+      tft.fillRect(150, 270, 110, 25, TFT_BLACK);
+      tft.setCursor(150, 270);
+      if (pumpRunCount < 3) {
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.printf("LERN %d/3", pumpRunCount);
+      } else if (pumpAlarmActive) {
+        tft.setTextColor(TFT_RED, TFT_BLACK);
+        tft.println("ALARM!");
+      } else {
+        tft.setTextColor(TFT_GREEN, TFT_BLACK);
+        tft.println("OK");
+      }
+      
+      // Laufzeit / Referenzzeit
+      tft.setTextSize(1);
+      tft.fillRect(270, 275, 150, 15, TFT_BLACK);
+      tft.setCursor(270, 275);
+      tft.setTextColor(TFT_CYAN, TFT_BLACK);
+      if (pumpActive) {
+        unsigned long currentRunTime = (millis() - pumpStartTime) / 1000;
+        int minutes = currentRunTime / 60;
+        int seconds = currentRunTime % 60;
+        tft.printf("%dm %ds", minutes, seconds);
+      } else if (pumpReferenceTime > 0) {
+        int refMinutes = pumpReferenceTime / 60;
+        int refSeconds = pumpReferenceTime % 60;
+        tft.printf("Ref: %dm %ds", refMinutes, refSeconds);
+      } else {
+        tft.print("--");
+      }
+      
+      // Schwellwerte-Info (Auto-Modus)
+      tft.setTextSize(1);
+      tft.fillRect(10, 55, 450, 15, TFT_BLACK);
+      tft.setCursor(10, 55);
+      tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+      if (pumpMode == MODE_AUTO) {
+        tft.printf("Auto: EIN %.1fcm / AUS %.1fcm", pumpOnLevel, pumpOffLevel);
+      } else if (pumpMode == MODE_MANUAL_ON) {
+        tft.printf("Manuell EIN - dauerhaft");
+      } else {
+        tft.printf("Manuell AUS - keine Pumpe");
+      }
+    }
   } // Ende Display-Update-Block
   
   // Serielle Ausgabe
