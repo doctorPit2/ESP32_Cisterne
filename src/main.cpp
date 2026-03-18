@@ -70,11 +70,13 @@ float pumpOffLevel = 15.0;  // Pumpe AUSschalten bei 15 cm
 #define BUTTON_W 230
 #define BUTTON_H 40
 
-// Seitenwechsel-Button (oben rechts)
-#define PAGE_BTN_X 380
-#define PAGE_BTN_Y 10
-#define PAGE_BTN_W 90
-#define PAGE_BTN_H 35
+// Seitenwechsel-Button (unterschiedliche Positionen je Seite)
+#define PAGE_BTN_MAIN_X 10
+#define PAGE_BTN_MAIN_Y 230
+#define PAGE_BTN_SETUP_X 360
+#define PAGE_BTN_SETUP_Y 270
+#define PAGE_BTN_W 110
+#define PAGE_BTN_H 40
 
 // Slider-Definitionen
 #define SLIDER_X 120
@@ -321,14 +323,18 @@ void drawPageButton() {
   uint16_t textColor = TFT_WHITE;
   const char* buttonText = (currentPage == PAGE_MAIN) ? "SETUP >" : "< MAIN";
   
-  tft.fillRoundRect(PAGE_BTN_X, PAGE_BTN_Y, PAGE_BTN_W, PAGE_BTN_H, 6, bgColor);
-  tft.drawRoundRect(PAGE_BTN_X, PAGE_BTN_Y, PAGE_BTN_W, PAGE_BTN_H, 6, TFT_WHITE);
+  // Unterschiedliche Positionen je nach Seite
+  int btnX = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_X : PAGE_BTN_SETUP_X;
+  int btnY = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_Y : PAGE_BTN_SETUP_Y;
+  
+  tft.fillRoundRect(btnX, btnY, PAGE_BTN_W, PAGE_BTN_H, 6, bgColor);
+  tft.drawRoundRect(btnX, btnY, PAGE_BTN_W, PAGE_BTN_H, 6, TFT_WHITE);
   
   tft.setTextColor(textColor, bgColor);
   tft.setTextSize(2);
   int textWidth = strlen(buttonText) * 12;
-  int textX = PAGE_BTN_X + (PAGE_BTN_W - textWidth) / 2;
-  int textY = PAGE_BTN_Y + (PAGE_BTN_H - 16) / 2;
+  int textX = btnX + (PAGE_BTN_W - textWidth) / 2;
+  int textY = btnY + (PAGE_BTN_H - 16) / 2;
   tft.setCursor(textX, textY);
   tft.println(buttonText);
 }
@@ -406,17 +412,20 @@ void drawSettingsPage() {
   drawSlider(1, pumpOnLevel, "EIN:");
   drawSlider(2, pumpOffLevel, "AUS:");
   
-  // Parameter-Infos
+  // Parameter-Infos - optimiertes Layout
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
   
+  // Luftpumpe oben
   tft.setCursor(10, 200);
   tft.println("Luftpumpe:");
   
-  tft.setCursor(10, 235);
+  // ESP-NOW darunter
+  tft.setCursor(10, 260);
   tft.println("ESP-NOW:");
   
-  tft.setCursor(10, 270);
+  // Pumpwatch links unten
+  tft.setCursor(10, 290);
   tft.println("Pumpwatch:");
   
   // Seitenwechsel-Button
@@ -552,11 +561,14 @@ void checkTouchButton() {
     
     Serial.printf("Touch: x=%d, y=%d\n", displayX, displayY);
     
-    // Seitenwechsel-Button prüfen
-    if (displayX >= PAGE_BTN_X && displayX <= (PAGE_BTN_X + PAGE_BTN_W) &&
-        displayY >= PAGE_BTN_Y && displayY <= (PAGE_BTN_Y + PAGE_BTN_H)) {
+    // Seitenwechsel-Button prüfen (unterschiedliche Position je Seite)
+    int btnX = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_X : PAGE_BTN_SETUP_X;
+    int btnY = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_Y : PAGE_BTN_SETUP_Y;
+    Serial.printf("Page-Button: X=%d-%d, Y=%d-%d\n", btnX, btnX+PAGE_BTN_W, btnY, btnY+PAGE_BTN_H);
+    if (displayX >= btnX && displayX <= (btnX + PAGE_BTN_W) &&
+        displayY >= btnY && displayY <= (btnY + PAGE_BTN_H)) {
       
-      Serial.println("Seitenwechsel!");
+      Serial.println(">>> SEITENWECHSEL ERKANNT! <<<");
       currentPage = (currentPage == PAGE_MAIN) ? PAGE_SETTINGS : PAGE_MAIN;
       
       // Seite komplett neu zeichnen
@@ -565,6 +577,9 @@ void checkTouchButton() {
       } else {
         drawSettingsPage();
       }
+      
+      // Button nochmal zeichnen damit er nicht überdeckt wird
+      drawPageButton();
       
       // Warten bis Touch losgelassen wird
       while (touch.touched()) {
@@ -1036,7 +1051,7 @@ void loop() {
     
     // EINSTELLUNGSSEITE: Luftpumpe, ESP-NOW, Pumpwatch
     else if (currentPage == PAGE_SETTINGS) {
-      // Luftpumpen-Status
+      // Luftpumpen-Status (bei Y=200)
       tft.setTextSize(2);
       tft.fillRect(150, 200, 110, 25, TFT_BLACK);
       tft.setCursor(150, 200);
@@ -1048,20 +1063,20 @@ void loop() {
         tft.println("AUS");
       }
       
-      // Nächste Luftpumpen-Aktivierung
+      // Nächste Luftpumpen-Aktivierung (größere Schrift)
       unsigned long nextAirPump = AIR_PUMP_INTERVAL - (currentTime - lastAirPumpTime);
       int minAir = nextAirPump / 60000;
       int secAir = (nextAirPump % 60000) / 1000;
-      tft.setTextSize(1);
-      tft.fillRect(270, 205, 100, 15, TFT_BLACK);
+      tft.setTextSize(2);
+      tft.fillRect(270, 200, 150, 25, TFT_BLACK);
       tft.setCursor(270, 205);
       tft.setTextColor(TFT_CYAN, TFT_BLACK);
       tft.printf("%dm %ds", minAir, secAir);
       
-      // ESP-NOW Status
+      // ESP-NOW Status (bei Y=260, verschoben nach unten)
       tft.setTextSize(2);
-      tft.fillRect(150, 235, 110, 25, TFT_BLACK);
-      tft.setCursor(150, 235);
+      tft.fillRect(120, 260, 110, 25, TFT_BLACK);
+      tft.setCursor(120, 260);
       if (espnowInitialized) {
         if (lastSendSuccess) {
           tft.setTextColor(TFT_GREEN, TFT_BLACK);
@@ -1075,20 +1090,20 @@ void loop() {
         tft.println("FEHLER");
       }
       
-      // Nächste ESP-NOW Übertragung
+      // Nächste ESP-NOW Übertragung (größere Schrift, ausgerichtet mit Luftpumpe bei X=270)
       unsigned long nextESPNow = ESPNOW_SEND_INTERVAL - (currentTime - lastESPNowSend);
       int minESP = nextESPNow / 60000;
       int secESP = (nextESPNow % 60000) / 1000;
-      tft.setTextSize(1);
-      tft.fillRect(270, 240, 100, 15, TFT_BLACK);
-      tft.setCursor(270, 240);
+      tft.setTextSize(2);
+      tft.fillRect(270, 260, 140, 25, TFT_BLACK);
+      tft.setCursor(270, 265);
       tft.setTextColor(TFT_CYAN, TFT_BLACK);
       tft.printf("%dm %ds", minESP, secESP);
       
-      // Pumpwatch-Status
+      // Pumpwatch-Status (unten links bei Y=290)
       tft.setTextSize(2);
-      tft.fillRect(150, 270, 110, 25, TFT_BLACK);
-      tft.setCursor(150, 270);
+      tft.fillRect(180, 290, 110, 25, TFT_BLACK);
+      tft.setCursor(180, 290);
       if (pumpRunCount < 3) {
         tft.setTextColor(TFT_YELLOW, TFT_BLACK);
         tft.printf("LERN %d/3", pumpRunCount);
@@ -1100,10 +1115,10 @@ void loop() {
         tft.println("OK");
       }
       
-      // Laufzeit / Referenzzeit
+      // Laufzeit / Referenzzeit (unter Pumpwatch)
       tft.setTextSize(1);
-      tft.fillRect(270, 275, 150, 15, TFT_BLACK);
-      tft.setCursor(270, 275);
+      tft.fillRect(300, 295, 150, 15, TFT_BLACK);
+      tft.setCursor(300, 295);
       tft.setTextColor(TFT_CYAN, TFT_BLACK);
       if (pumpActive) {
         unsigned long currentRunTime = (millis() - pumpStartTime) / 1000;
@@ -1130,6 +1145,9 @@ void loop() {
       } else {
         tft.printf("Manuell AUS - keine Pumpe");
       }
+      
+      // Button nochmal zeichnen damit er nicht von fillRect überdeckt wird
+      drawPageButton();
     }
   } // Ende Display-Update-Block
   
