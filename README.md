@@ -6,8 +6,11 @@ Automatisches Zisternen-Überwachungssystem mit ESP32, TFT-Display und automatis
 
 - **Wasserstandsmessung** mit MPX5050 Drucksensor
 - **TFT-Display** (480x320, ST7796) zur Echtzeitanzeige
-- **Touch-Steuerung** mit XPT2046 Touch-Controller für manuelle Pumpensteuerung
-- **Automatische Pumpensteuerung** mit Hysterese
+- **Touch-Steuerung** mit XPT2046 Touch-Controller
+  - Manuelle Pumpensteuerung (Auto/Manuell Ein/Aus)
+  - **Einstellungsseite** mit interaktiven Slidern für Pumpen-Schwellenwerte
+  - Seitenwechsel-Button zwischen Haupt- und Einstellungsansicht
+- **Automatische Pumpensteuerung** mit einstellbarer Hysterese
 - **Intelligente Pumpenüberwachung** mit Lernphase und Alarm bei Anomalien
 - **Automatischer Druckausgleich** mit Luftpumpe (alle 5 Min. für 10 Sek.)
 - Messung wird während Druckausgleich pausiert
@@ -55,10 +58,14 @@ Die Pumpe kann in drei Modi betrieben werden:
 
 #### 1. **AUTO-Modus** (Standard)
 Automatische Steuerung mit **Hysterese**:
-- **EINschalten**: bei ≥ 30 cm Wasserstand
-- **AUSschalten**: bei ≤ 15 cm Wasserstand
+- **EINschalten**: bei ≥ 30 cm Wasserstand (Standard, anpassbar)
+- **AUSschalten**: bei ≤ 15 cm Wasserstand (Standard, anpassbar)
 
 Dies verhindert häufiges Ein-/Ausschalten.
+
+**Schwellenwerte anpassen:**
+- Via **Einstellungsseite**: Interaktive Slider für komfortable Anpassung (10-50 cm)
+- Via **Code**: Änderung der Variablen `pumpOnLevel` und `pumpOffLevel` in `main.cpp`
 
 #### 2. **MANUELL EIN-Modus**
 - Pumpe läuft kontinuierlich bis der Wasserstand 15 cm erreicht
@@ -75,11 +82,37 @@ Dies verhindert häufiges Ein-/Ausschalten.
   - 🟢 **Grün** = MANUELL EIN  
   - 🔴 **Rot** = MANUELL AUS
 - **Serielle Konsole**: Sende 'M' über die serielle Konsole (115200 Baud)
+
+### GUI-Bedienung
+
+Das System verfügt über zwei Display-Seiten zwischen denen per Touch gewechselt werden kann.
+
+#### Haupt-Ansicht (PAGE_MAIN)
+- **Aktuelle Werte**: Wasserstand, ADC-Wert, Pumpenstatus
+- **24h-Verlaufs-Graph**: Zeigt Historie mit Pumpen-Schwellwerten
+- **Status-Anzeigen**: ESP-NOW Verbindung, Luftpumpe, Countdowns
+- **Modus-Button**: Umschalten zwischen Auto/Manuell Ein/Aus
+- **Seiten-Button** (unten links): Wechsel zur Einstellungsseite
+
+#### Einstellungs-Ansicht (PAGE_SETTINGS)
+- **Interaktive Slider** zur Anpassung der Pumpen-Schwellwerte:
+  - **EIN-Schwelle**: Wasserstand bei dem die Pumpe einschaltet (10-50 cm)
+  - **AUS-Schwelle**: Wasserstand bei dem die Pumpe ausschaltet (10-50 cm)
+- **System-Informationen**: Luftpumpe, ESP-NOW, Pumpenüberwachung
+- **Seiten-Button** (unten rechts): Zurück zur Hauptansicht
+
+**Slider-Bedienung:**
+- Berühren und ziehen Sie den Regler nach links oder rechts
+- Werte werden in Echtzeit aktualisiert
+- Änderungen werden sofort übernommen (keine Bestätigung erforderlich)
   
 **Touch-Controller**: XPT2046 (über SPI, Chip Select GPIO 33)
-- Die Touch-Kalibrierung kann in `main.cpp` in der Funktion `checkTouchButton()` angepasst werden
-- Bei ersten Tests werden die Touch-Koordinaten im Serial Monitor angezeigt
-- Falls der Touch nicht genau funktioniert, passen Sie die `map()`-Werte an
+
+**Touch-Kalibrierung:**
+- Die Touch-Kalibrierung kann in `main.cpp` angepasst werden
+- Aktivieren Sie `TOUCH_CALIBRATION_MODE` temporär zum Testen
+- Touch-Koordinaten werden im Serial Monitor angezeigt
+- Falls der Touch nicht genau funktioniert, passen Sie die `map()`-Werte in der Funktion an
 
 ### Intelligente Pumpenüberwachung
 
@@ -158,15 +191,27 @@ Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
 
 ## Kalibrierung
 
-Passe die Werte in `src/main.cpp` an:
+### Über Touch-GUI (empfohlen)
+
+Die Pumpen-Schwellenwerte können bequem über die **Einstellungsseite** angepasst werden:
+1. Wechseln Sie zur Einstellungsansicht (Button unten links auf Hauptseite)
+2. Verwenden Sie die Slider zur Anpassung:
+   - **EIN-Schwelle**: Bei welchem Wasserstand die Pumpe einschaltet (10-50 cm)
+   - **AUS-Schwelle**: Bei welchem Wasserstand die Pumpe ausschaltet (10-50 cm)
+3. Änderungen werden sofort übernommen
+
+### Über Code
+
+Alternativ können die Werte fest in `src/main.cpp` eingestellt werden:
 
 ```cpp
 #define ADC_MIN 0              // ADC-Wert bei leerem Tank
 #define ADC_MAX 4095           // ADC-Wert bei vollem Tank
 #define WATER_LEVEL_MAX 300    // Maximale Füllhöhe in cm
 
-#define PUMP_ON_LEVEL 30.0     // Pumpe EIN-Schwelle
-#define PUMP_OFF_LEVEL 15.0    // Pumpe AUS-Schwelle
+// Standard-Pumpen-Schwellenwerte (können über GUI geändert werden)
+float pumpOnLevel = 30.0;      // Pumpe EIN-Schwelle
+float pumpOffLevel = 15.0;     // Pumpe AUS-Schwelle
 ```
 
 **Graph-Einstellungen:**
@@ -190,10 +235,13 @@ Passe die Werte in `src/main.cpp` an:
 **ESP-NOW Einstellungen:**
 ```cpp
 #define ESPNOW_SEND_INTERVAL 900000  // 15 Minuten (in ms)
+// Für Test-Zwecke: #define ESPNOW_SEND_INTERVAL 2000  // 2 Sekunden
 
 // MAC-Adresse der Wetterstation anpassen!
 uint8_t weatherStationMAC[] = {0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF};
 ```
+
+**Hinweis für Tests:** Während der Entwicklung/Tests kann das Sendeintervall auf 2000 ms (2 Sekunden) reduziert werden. Für den Produktivbetrieb sollte es auf 900000 ms (15 Minuten) gesetzt werden, um Energie zu sparen.
 
 Siehe [ESPNOW_SETUP.md](ESPNOW_SETUP.md) für vollständige Anleitung.
 
@@ -249,11 +297,18 @@ preferences.end();
 - Touch-Kalibrierung in `main.cpp` anpassen
 - Aktivieren Sie `TOUCH_CALIBRATION_MODE` temporär
 - Koordinaten im Serial Monitor ablesen
+- `map()`-Werte in der Touch-Verarbeitung anpassen
+
+**Slider reagieren ungenau:**
+- Gleiche Lösung wie bei Touch-Button-Problemen
+- Touch-Kalibrierung prüfen und anpassen
+- Bei sehr ungenauen Werten: Touchscreen-Anschluss prüfen
 
 **ESP-NOW sendet nicht:**
 - MAC-Adresse der Wetterstation prüfen
 - Reichweite (max. 200m) beachten
 - Status auf Display kontrollieren
+- Serielle Konsole für Fehlerdetails aktivieren
 
 ## Sicherheitshinweise
 
@@ -265,9 +320,9 @@ preferences.end();
 - **Pumpenüberwachung beachten**: Bei Alarm die Pumpe und Filter prüfen
 - Regelmäßig die ESP-NOW Verbindung zur Wetterstation kontrollieren
 
-## Display-Ansicht
+## Display-Ansichten
 
-**Normal-Betrieb:**
+### Hauptansicht (Normal-Betrieb):
 ```
 ┌───────────────────────────────────────────────────────────┐
 │ Zisternen-Monitor                                         │
@@ -286,8 +341,34 @@ preferences.end();
 │ ESP-NOW: ✓ OK #12      │                                  │
 │ Nächste ESP-NOW: 14m   │                                  │
 │ Nächste Luftp.: 4m 23s │                                  │
+│ [Einstellungen]        │                                  │
 └───────────────────────────────────────────────────────────┘
 ```
+
+### Einstellungsansicht:
+```
+┌───────────────────────────────────────────────────────────┐
+│ Einstellungen                                             │
+│                                                            │
+│ EIN:  [━━━━━━━●━━━━━━]  30.0 cm                          │
+│                                                            │
+│ AUS:  [━━━●━━━━━━━━━━]  15.0 cm                          │
+│                                                            │
+│                                                            │
+│ Luftpumpe:                                                │
+│   Intervall: 5 Min, Dauer: 10 Sek                        │
+│                                                            │
+│ ESP-NOW:                                                  │
+│   Sendeintervall: 15 Min, Status: OK                     │
+│                                                            │
+│ Pumpwatch:                                                │
+│   Referenz: 120s, Letzter Lauf: 118s                     │
+│                                                            │
+│                                      [Hauptansicht]       │
+└───────────────────────────────────────────────────────────┘
+```
+
+### Status-Anzeigen:
 
 **Lernphase (erste 3 Pumpläufe):**
 ```
@@ -306,10 +387,17 @@ preferences.end();
 ```
 
 **Layout:**
-- **Links**: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, ESP-NOW, Countdowns)
-- **Rechts**: 24h-Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
-- **Button**: Farbiger Modus-Button (Blau=AUTO, Grün=MANUELL EIN, Rot=MANUELL AUS)
-- **Alarm**: Roter blinkender Bildschirm bei Pumpen-Störung
+- **Hauptansicht**:
+  - Links: Aktuelle Werte (ADC, Wasserstand, Pumpe, Luftpumpe, ESP-NOW, Countdowns)
+  - Rechts: 24h-Verlaufs-Graph mit Y-Achse (15-30 cm) und Zeitachse
+  - Modus-Button: Farbiger Button (Blau=AUTO, Grün=MANUELL EIN, Rot=MANUELL AUS)
+  - Unten links: Seitenwechsel-Button zu Einstellungen
+  - Alarm: Roter blinkender Bildschirm bei Pumpen-Störung
+  
+- **Einstellungsansicht**:
+  - Oben: Zwei interaktive Slider für EIN/AUS-Schwellenwerte
+  - Mitte: System-Parameter (Luftpumpe, ESP-NOW, Pumpenüberwachung)
+  - Unten rechts: Seitenwechsel-Button zurück zur Hauptansicht
 
 ## Lizenz
 
