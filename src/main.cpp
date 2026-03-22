@@ -26,6 +26,8 @@ typedef struct {
   int adcValue;          // Roher ADC-Wert
   bool pumpActive;       // Status der Wasserpumpe
   bool pumpAlarm;        // Pumpen-Alarm bei Überschreitung
+  unsigned long pumpReferenceTime;  // Referenzzeit in Sekunden
+  unsigned long lastPumpDuration;   // Letzte Pumpdauer in Sekunden
 } WaterLevelData;
 
 WaterLevelData dataToSend;
@@ -132,6 +134,7 @@ unsigned long pumpStartTime = 0;     // Zeitpunkt Pumpe EIN
 unsigned long pumpRunTimes[3] = {0, 0, 0}; // Array für erste 3 Messungen (in Sekunden)
 int pumpRunCount = 0;                // Anzahl der Messungen
 unsigned long pumpReferenceTime = 0; // Referenzzeit in Sekunden (Mittelwert)
+unsigned long lastPumpDuration = 0;  // Letzte Pumpdauer in Sekunden
 bool pumpAlarmActive = false;        // Alarm-Status
 bool pumpAlarmBlink = false;         // Blink-Status für TFT
 unsigned long lastAlarmBlink = 0;    // Zeitpunkt letztes Blinken
@@ -205,15 +208,17 @@ void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
   dataToSend.adcValue = adcValue;
   dataToSend.pumpActive = pumpActive;
   dataToSend.pumpAlarm = pumpAlarmActive;
+  dataToSend.pumpReferenceTime = pumpReferenceTime;
+  dataToSend.lastPumpDuration = lastPumpDuration;
   
   // Daten senden
   esp_err_t result = esp_now_send(weatherStationMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
   
   if (result == ESP_OK) {
     espnowSendCount++;
-    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s)\n", 
+    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s, RefZeit: %lu s, Letzter Lauf: %lu s)\n", 
                   espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS",
-                  pumpAlarmActive ? "JA" : "NEIN");
+                  pumpAlarmActive ? "JA" : "NEIN", pumpReferenceTime, lastPumpDuration);
   } else {
     Serial.println("ESP-NOW: Fehler beim Senden!");
   }
@@ -920,6 +925,7 @@ void loop() {
         
         // Laufzeit berechnen (nur im AUTO-Modus für Überwachung)
         unsigned long pumpRunTime = (millis() - pumpStartTime) / 1000; // in Sekunden
+        lastPumpDuration = pumpRunTime; // Letzte Laufzeit speichern für ESP-NOW
         Serial.println(">>> PUMPE AUSGESCHALTET (AUTO) <<<");
         Serial.printf(">>> GPIO %d auf LOW gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
         Serial.printf(">>> Laufzeit: %lu Sekunden <<<\n", pumpRunTime);
