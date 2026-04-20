@@ -4,6 +4,7 @@
 #include <SPI.h>
 #include <Adafruit_Sensor.h>
 #include "Adafruit_BME680.h"
+#include <Adafruit_CCS811.h>
 #include <WiFi.h>
 //#include "ESPAsyncWebServer.h"
 #include <esp_now.h>
@@ -21,6 +22,7 @@ const char* password = "3x3Istneun";      // Ihr Router-Passwort
 
 Tomoto_HM330X sensor; //Luft Partikel
 DFRobot_RainfallSensor_I2C regen_Tic (&Wire); //RegenSensor
+Adafruit_CCS811 ccs; //Luftqualität eCO2 und TVOC
 
 uint8_t broadcastAddress1[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
 
@@ -56,6 +58,9 @@ typedef struct struct_message {
   float rainfall1;
   float workingTime;
   float rawData;
+
+  uint16_t eco2;      // CCS811 eCO2 in ppm
+  uint16_t tvoc;      // CCS811 TVOC in ppb
 
 } struct_message;
 
@@ -97,6 +102,9 @@ float temperature;
 float humidity;
 float pressure;
 float gasResistance;
+
+uint16_t eco2;  // CCS811 eCO2 in ppm
+uint16_t tvoc;  // CCS811 TVOC in ppb
 
 float std_PM1;      //Staubsensorwerte standard particlate matter (ug/m^3) --")
 float std_PM2_5;
@@ -147,6 +155,23 @@ void get_regenDaten(){
   
 
 
+}
+
+void getCCS811Readings(){     // CCS811 Luftqualität auslesen
+  if(ccs.available()){
+    if(!ccs.readData()){
+      eco2 = ccs.geteCO2();
+      tvoc = ccs.getTVOC();
+    } else {
+      Serial.println("CCS811 Lesefehler");
+      eco2 = 0;
+      tvoc = 0;
+    }
+  } else {
+    // Sensor noch nicht bereit
+    eco2 = 0;
+    tvoc = 0;
+  }
 }
 
 void checkAndUpdateChannel() {
@@ -235,7 +260,7 @@ void getBME680Readings(){     //BME680 auslesen
     Serial.println(F("Failed to complete reading :("));
     return;
   }
-  temperature = bme.temperature;
+  temperature = bme.temperature - 10.0;  // Korrektur: Gas-Heater erwärmt Sensor um ~10°C
   pressure = bme.pressure / 100.0;
   humidity = bme.humidity;
   gasResistance = bme.gas_resistance / 1000.0;
@@ -320,7 +345,19 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   bme.setHumidityOversampling(BME680_OS_2X);
   bme.setPressureOversampling(BME680_OS_4X);
   bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
-  bme.setGasHeater(320, 150); // 320*C for 150 ms
+  bme.setGasHeater(0, 0); // Gas-Heater deaktiviert (haben CCS811 für Luftqualität)
+  
+  // Init CCS811 sensor
+  if(!ccs.begin()){
+    Serial.println("CCS811 nicht gefunden! Bitte Verdrahtung prüfen.");
+    // Kein while(1) - System läuft auch ohne CCS811 weiter
+  } else {
+    Serial.println("CCS811 gefunden und initialisiert");
+    // Warte bis Sensor bereit ist
+    while(!ccs.available()){
+      delay(100);
+    }
+  }
   
   // Register send callback
   esp_now_register_send_cb(OnDataSent);
@@ -431,6 +468,8 @@ boolean parse_data() {
   }
   wind_speed = speed;
   wind_dir = dir * 225;
+  wind_dir = wind_dir / 10;
+
   return true;
 }
 
@@ -452,7 +491,7 @@ void loop() { //////////////////////////Loop////////////////////////////////////
     boolean validData = parse_data();
     if (!validData) {
       Serial.println("fail,could not parse data");
-      delay(1000);
+      // delay(1000); // ENTFERNT - blockierte die gesamte Loop!
     } else {
       digitalWrite(LED_BUILTIN, HIGH);
       sprintf(a, "ok,%d,%d", wind_dir, wind_speed);
@@ -473,6 +512,7 @@ void loop() { //////////////////////////Loop////////////////////////////////////
     get_regenDaten();
     getSensorReadings();
     getBME680Readings();
+    getCCS811Readings();
     Serial.printf("Temperature = %.2f ºC \n", temperature);
     Serial.printf("Humidity = %.2f %% \n", humidity);
     Serial.printf("Pressure = %.2f hPa \n", pressure);
@@ -487,6 +527,9 @@ void loop() { //////////////////////////Loop////////////////////////////////////
     Serial.printf("atmospheric environment (ug/m^3) = %.2f ug/m^3\n", atm_PM1);
     Serial.printf("atmospheric environment 2.5 (ug/m^3) = %.2f ug/m^3\n", atm_PM2_5);
     Serial.printf("atmospheric environment 10 (ug/m^3) = %.2f ug/m^3\n", atm_PM10);
+    Serial.println();
+    Serial.printf("eCO2 = %u ppm\n", eco2);
+    Serial.printf("TVOC = %u ppb\n", tvoc);
     Serial.println();
     
     
@@ -511,6 +554,9 @@ myData.workingTime = workingTime ;
 myData.rainFall = rainFall;
 myData.rainfall1 = rainfall1 ;
 myData.rawData = rawData;
+
+myData.eco2 = eco2;
+myData.tvoc = tvoc;
 
   // Send message via ESP-NOW
   esp_err_t result = esp_now_send(broadcastAddress1, (uint8_t *) &myData, sizeof(myData));
