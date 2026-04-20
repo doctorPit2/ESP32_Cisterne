@@ -15,10 +15,6 @@ const byte DATAPIN = 19;    // TX20 Windmesser
 const bool INVERSE_LOGIC = false;
 const bool VERBOSE = false;
 
-// WiFi Credentials - ERSETZEN SIE DIESE MIT IHREN DATEN!
-const char* ssid = "Glasfaser";           // Ihr Router-Name
-const char* password = "3x3Istneun";      // Ihr Router-Passwort
-
 Tomoto_HM330X sensor; //Luft Partikel
 DFRobot_RainfallSensor_I2C regen_Tic (&Wire); //RegenSensor
 
@@ -27,14 +23,6 @@ uint8_t broadcastAddress1[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
 uint8_t broadcastAddress2[] = {0x4C, 0xC3, 0x82, 0xC4, 0xDC, 0xEC};
 
 // Replace with your network credentials
-
-// Automatische WiFi-Kanal-Verfolgung
-uint8_t lastWifiChannel = 0;
-unsigned long lastChannelCheck = 0;
-const unsigned long CHANNEL_CHECK_INTERVAL = 10000; // Alle 10 Sekunden prüfen
-
-
-
 typedef struct struct_message {
   float temperature;
   float humidity;
@@ -149,81 +137,7 @@ void get_regenDaten(){
 
 }
 
-void checkAndUpdateChannel() {
-  // Nur prüfen wenn WiFi verbunden ist
-  if (WiFi.status() != WL_CONNECTED) {
-    return;
-  }
-  
-  uint8_t currentChannel = WiFi.channel();
-  
-  // Beim ersten Aufruf nur initialisieren
-  if (lastWifiChannel == 0) {
-    lastWifiChannel = currentChannel;
-    Serial.print("[Kanal-Monitor] Initiale Kanal-Erkennung: ");
-    Serial.println(currentChannel);
-    return;
-  }
-  
-  // Prüfe ob sich der Kanal geändert hat
-  if (currentChannel != lastWifiChannel && currentChannel != 0) {
-    Serial.println("\n======================================");
-    Serial.print("[Kanal-Wechsel] Erkannt: ");
-    Serial.print(lastWifiChannel);
-    Serial.print(" -> ");
-    Serial.println(currentChannel);
-    Serial.println("======================================");
-    
-    // ESP-NOW deinitialisieren
-    esp_now_deinit();
-    Serial.println("[ESP-NOW] Deinitialisiert");
-    
-    // Neuen Kanal setzen
-    Serial.print("[ESP-NOW] Setze neuen Kanal: ");
-    Serial.println(currentChannel);
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_promiscuous(false);
-    
-    // ESP-NOW neu initialisieren
-    if (esp_now_init() == ESP_OK) {
-      Serial.println("[ESP-NOW] Neu initialisiert");
-      esp_now_register_send_cb(OnDataSent);
-      
-      // WICHTIG: Beide Peers wieder hinzufügen!
-      peerInfo.channel = currentChannel;
-      
-      // Peer 1 hinzufügen
-      memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
-      esp_err_t result1 = esp_now_add_peer(&peerInfo);
-      if (result1 == ESP_OK) {
-        Serial.println("[ESP-NOW] Peer 1 erfolgreich hinzugefügt");
-      } else {
-        Serial.print("[ESP-NOW] FEHLER beim Peer 1 hinzufügen: ");
-        Serial.println(result1);
-      }
-      
-      // Peer 2 hinzufügen
-      memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
-      esp_err_t result2 = esp_now_add_peer(&peerInfo);
-      if (result2 == ESP_OK) {
-        Serial.println("[ESP-NOW] Peer 2 erfolgreich hinzugefügt");
-      } else {
-        Serial.print("[ESP-NOW] FEHLER beim Peer 2 hinzufügen: ");
-        Serial.println(result2);
-      }
-      
-      if (result1 == ESP_OK && result2 == ESP_OK) {
-        lastWifiChannel = currentChannel;
-        Serial.println("[ESP-NOW] Erfolgreich auf neuem Kanal aktiv");
-        Serial.println("======================================\n");
-      }
-    } else {
-      Serial.println("[ESP-NOW] FEHLER bei Neuinitialisierung!");
-      Serial.println("======================================\n");
-    }
-  }
-}
+
 void getBME680Readings(){     //BME680 auslesen
   // Tell BME680 to begin measurement.
   unsigned long endTime = bme.beginReading();
@@ -247,74 +161,52 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(DATAPIN, INPUT);
+  Serial.begin(115200);
   Serial.println("starting, direction in ddeg, speed in dm/s");
   last_event_time_ms = millis();
-  
-  // Staubsensor initialisieren
-  if (!sensor.begin()) {
+  // Set device as a Wi-Fi Station
+ 
+ if (!sensor.begin()) {
     Serial.println("Failed to initialize HM330X");
-    while (1);
+    while (1)
+      ;
   }
+
   Serial.println("HM330X initialized");
-  
-  // WiFi im STA-Modus starten
+  Serial.println();
   WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false); // Deaktiviert Power-Save
-  
-  // Mit Router verbinden
-  Serial.print("Verbinde mit WiFi: ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
-  
-  int wifiTimeout = 0;
-  while (WiFi.status() != WL_CONNECTED && wifiTimeout < 40) {
-    delay(500);
-    Serial.print(".");
-    wifiTimeout++;
+  WiFi.setSleep(false); //Deaktiviert Power-Save
+
+  // Kanal nach dem Setzen des STA-Modus festlegen
+  esp_err_t channelResult = esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  if (channelResult != ESP_OK) {
+    Serial.printf("esp_wifi_set_channel failed: %d\n", channelResult);
   }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi verbunden!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("WiFi-Kanal (Router): ");
-    Serial.println(WiFi.channel());
-  } else {
-    Serial.println("\nWiFi-Verbindung fehlgeschlagen!");
-  }
-  
-  // Kanal fest auf 1 setzen für ESP-NOW
-  uint8_t currentPrimaryChannel = 1;
-  esp_wifi_set_promiscuous(true);
-  esp_wifi_set_channel(currentPrimaryChannel, WIFI_SECOND_CHAN_NONE);
-  esp_wifi_set_promiscuous(false);
-  Serial.println("INFO: ESP-NOW Kanal fest auf 1 gesetzt");
-  
+
+  uint8_t currentPrimaryChannel = 0;
   wifi_second_chan_t currentSecondChannel = WIFI_SECOND_CHAN_NONE;
   esp_wifi_get_channel(&currentPrimaryChannel, &currentSecondChannel);
-  Serial.printf("ESP-NOW aktueller Kanal: %u\n", currentPrimaryChannel);
-  
+  Serial.printf("ESP-NOW home channel: %u\n", currentPrimaryChannel);
+
   memset(&peerInfo, 0, sizeof(peerInfo));
   peerInfo.channel = currentPrimaryChannel;
   peerInfo.ifidx = WIFI_IF_STA;
-  peerInfo.encrypt = false;
-  
+
   // Init ESP-NOW
   if (esp_now_init() != ESP_OK) {
     Serial.println("Error initializing ESP-NOW");
     return;
   }
   
-  // I2C Bus initialisieren (wichtig für BME680!)
-  Wire.begin();
-  Serial.println("I2C initialisiert");
   
+
+
+
   // Init BME680 sensor
   if (!bme.begin()) {
     Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
     while (1);
   }
-  Serial.println("BME680 gefunden und initialisiert");
   // Set up oversampling and filter initialization
   bme.setTemperatureOversampling(BME680_OS_8X);
   bme.setHumidityOversampling(BME680_OS_2X);
@@ -322,26 +214,34 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   bme.setIIRFilterSize(BME680_FILTER_SIZE_3);
   bme.setGasHeater(320, 150); // 320*C for 150 ms
   
-  // Register send callback
+  
+  
+  // Once ESPNow is successfully Init, we will register for Send CB to
+  // get the status of Trasnmitted packet
   esp_now_register_send_cb(OnDataSent);
   
-  // Register peer 1
-  memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer 1");
-    return;
-  }
-  Serial.println("Peer 1 hinzugefügt");
+  // Register peer
   
-  // Register peer 2
-  memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer 2");
-    return;
-  }
-  Serial.println("Peer 2 hinzugefügt");
+  peerInfo.encrypt = false;
   
-  Serial.println("Setup abgeschlossen - ESP-NOW Sender bereit!");
+ 
+  
+  
+      // Add peer        
+      // register first peer
+      memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
+      if (esp_now_add_peer(&peerInfo) != ESP_OK){
+        Serial.println("Failed to add peer");
+        return;
+      }
+     
+      // register second peer
+      memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
+      if (esp_now_add_peer(&peerInfo) != ESP_OK){
+        Serial.println("Failed to add peer");
+        return;
+      }
+      
 }
  
 
@@ -431,19 +331,12 @@ boolean parse_data() {
   }
   wind_speed = speed;
   wind_dir = dir * 225;
+  wind_dir = wind_dir /10
   return true;
 }
 
 void loop() { //////////////////////////Loop/////////////////////////////////////////
  
-  
-  
-  // Automatische WiFi-Kanal-Überwachung und Anpassung (DEAKTIVIERT - Kanal fest auf 1)
-  // if (millis() - lastChannelCheck >= CHANNEL_CHECK_INTERVAL) {
-  //   checkAndUpdateChannel();
-  //   lastChannelCheck = millis();
-  // }
-  
   if ((digitalRead(DATAPIN) && !INVERSE_LOGIC) or
       (!digitalRead(DATAPIN) && INVERSE_LOGIC)) {
     time_ref_us = micros();
