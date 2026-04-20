@@ -50,10 +50,12 @@ Lade diesen Sketch auf die **Wetterstation**, um Daten zu empfangen:
 
 // Datenstruktur (muss identisch mit Sender sein!)
 typedef struct {
-  float waterLevel;      // Wasserstand in cm
-  int adcValue;          // Roher ADC-Wert
-  bool pumpActive;       // Status der Wasserpumpe
-  bool pumpAlarm;        // Pumpen-Alarm bei Laufzeitüberschreitung
+  float waterLevel;                // Wasserstand in cm
+  int adcValue;                    // Roher ADC-Wert
+  bool pumpActive;                 // Status der Wasserpumpe
+  bool pumpAlarm;                  // Pumpen-Alarm bei Laufzeitüberschreitung
+  unsigned long pumpReferenceTime; // Referenzzeit in Sekunden
+  unsigned long lastPumpDuration;  // Letzte Pumpdauer in Sekunden
 } WaterLevelData;
 
 WaterLevelData receivedData;
@@ -67,10 +69,14 @@ void OnDataRecv(const uint8_t *mac, const uint8_t *incomingData, int len) {
   Serial.printf("ADC-Wert: %d\n", receivedData.adcValue);
   Serial.printf("Pumpe: %s\n", receivedData.pumpActive ? "EIN" : "AUS");
   Serial.printf("Pumpen-Alarm: %s\n", receivedData.pumpAlarm ? "🚨 JA" : "OK");
+  Serial.printf("Referenzzeit: %lu Sekunden\n", receivedData.pumpReferenceTime);
+  Serial.printf("Letzte Pumpdauer: %lu Sekunden\n", receivedData.lastPumpDuration);
   
   // ALARM-Behandlung
   if (receivedData.pumpAlarm) {
     Serial.println("⚠️ WARNUNG: Pumpen-Laufzeit überschritten!");
+    Serial.printf("→ Letzte Laufzeit: %lu s (Referenz: %lu s)\n", 
+                  receivedData.lastPumpDuration, receivedData.pumpReferenceTime);
     Serial.println("→ Filter oder Pumpe prüfen!");
     // Hier z.B. Push-Benachrichtigung, Email, etc.
   }

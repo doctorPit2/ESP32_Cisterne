@@ -98,7 +98,12 @@ Das System verfügt über zwei Display-Seiten zwischen denen per Touch gewechsel
 - **Interaktive Slider** zur Anpassung der Pumpen-Schwellwerte:
   - **EIN-Schwelle**: Wasserstand bei dem die Pumpe einschaltet (10-50 cm)
   - **AUS-Schwelle**: Wasserstand bei dem die Pumpe ausschaltet (10-50 cm)
-- **System-Informationen**: Luftpumpe, ESP-NOW, Pumpenüberwachung
+- **System-Informationen**:
+  - **Luftpumpe**: Intervall und Laufzeit
+  - **ESP-NOW**: Sendeintervall und Verbindungsstatus
+  - **Pumpenüberwachung (Pumpwatch)**: 
+    - **Referenzzeit**: Durchschnittliche Laufzeit aus den ersten 3 Pumpläufen (in Sekunden)
+    - **Letzter Lauf**: Dauer des letzten Pumpvorgangs (in Sekunden)
 - **Seiten-Button** (unten rechts): Zurück zur Hauptansicht
 
 **Slider-Bedienung:**
@@ -155,6 +160,11 @@ Der Alarm wird automatisch zurückgesetzt, wenn:
 
 **Hinweis:** Die Überwachung funktioniert nur im **AUTO-Modus**, da nur dort die Pumpe vom Wasserstand gesteuert wird.
 
+#### Anzeige der Überwachungsdaten
+- **Referenzzeit** und **letzte Pumpdauer** werden auf der **Einstellungsseite** angezeigt
+- Die Werte sind auch über **ESP-NOW** verfügbar und werden an die Wetterstation übertragen
+- Im **Serial Monitor** werden detaillierte Informationen zu jedem Pumplauf ausgegeben
+
 ### RRD-Verlaufs-Graph
 - **Ringpuffer** mit 96 Datenpunkten (24 Stunden Historie)
 - **Sampling-Intervall**: 15 Minuten pro Datenpunkt
@@ -177,10 +187,12 @@ Der älteste Wert wird durch den neuesten überschrieben (Round Robin).
 ### ESP-NOW Datenübertragung
 - **Drahtlose Kommunikation** ohne WLAN-Router (direkte ESP-zu-ESP Verbindung)
 - Sendet alle **15 Minuten** automatisch:
-  - Wasserstand in cm
-  - Roher ADC-Wert
-  - Pumpenstatus (EIN/AUS)
-  - **Pumpen-Alarm-Status** (bei Laufzeitüberschreitung)
+  - **Wasserstand** in cm (`waterLevel`)
+  - **Roher ADC-Wert** (`adcValue`)
+  - **Pumpenstatus** EIN/AUS (`pumpActive`)
+  - **Pumpen-Alarm-Status** bei Laufzeitüberschreitung (`pumpAlarm`)
+  - **Pumpen-Referenzzeit** in Sekunden (`pumpReferenceTime`)
+  - **Letzte Pumpdauer** in Sekunden (`lastPumpDuration`)
 - **Sofortige Alarm-Nachricht** bei Erkennung einer Pumpenstörung
 - **Reichweite**: bis zu 200m im Freien
 - **Niedriger Stromverbrauch**
@@ -363,10 +375,17 @@ preferences.end();
 │                                                            │
 │ Pumpwatch:                                                │
 │   Referenz: 120s, Letzter Lauf: 118s                     │
+│   (Durchschnittslaufzeit | Letzte gemessene Laufzeit)    │
 │                                                            │
 │                                      [Hauptansicht]       │
 └───────────────────────────────────────────────────────────┘
 ```
+
+**Erklärung Pumpwatch-Anzeige:**
+- **Referenz**: Durchschnittliche Pumpenlaufzeit aus den ersten 3 Messungen (Sollwert)
+- **Letzter Lauf**: Dauer des zuletzt abgeschlossenen Pumpvorgangs (Istwert)
+- Wenn "Letzter Lauf" > 150% von "Referenz" → **Pumpen-Alarm** wird ausgelöst
+- Beide Werte werden auch via ESP-NOW an die Wetterstation übertragen
 
 ### Status-Anzeigen:
 
