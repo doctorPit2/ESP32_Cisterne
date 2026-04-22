@@ -6,6 +6,7 @@
 #include "Adafruit_BME680.h"
 #include <Adafruit_CCS811.h>
 #include <WiFi.h>
+//#include <WiFiMulti.h>  // NICHT MEHR BENÖTIGT - nur ESP-NOW, kein WiFi-Netzwerk
 //#include "ESPAsyncWebServer.h"
 #include <esp_now.h>
 #include <esp_wifi.h>
@@ -16,9 +17,10 @@ const byte DATAPIN = 19;    // TX20 Windmesser
 const bool INVERSE_LOGIC = false;
 const bool VERBOSE = false;
 
-// WiFi Credentials - ERSETZEN SIE DIESE MIT IHREN DATEN!
-const char* ssid = "Glasfaser";           // Ihr Router-Name
-const char* password = "3x3Istneun";      // Ihr Router-Passwort
+// KEIN WiFi-Netzwerk mehr - nur ESP-NOW auf Kanal 1
+// WiFiMulti wifiMulti;  // ENTFERNT
+// WiFi Credentials ENTFERNT - ESP32_Meteo_aussen braucht nur ESP-NOW
+
 
 Tomoto_HM330X sensor; //Luft Partikel
 DFRobot_RainfallSensor_I2C regen_Tic (&Wire); //RegenSensor
@@ -28,14 +30,11 @@ uint8_t broadcastAddress1[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
 
 uint8_t broadcastAddress2[] = {0x4C, 0xC3, 0x82, 0xC4, 0xDC, 0xEC};
 
+// MAC-Adresse des RSSI Monitors
+uint8_t broadcastAddress3[] = {0xB0, 0xCB, 0xD8, 0x02, 0xFD, 0x08};
+
 // Replace with your network credentials
-
-// Automatische WiFi-Kanal-Verfolgung
-uint8_t lastWifiChannel = 0;
-unsigned long lastChannelCheck = 0;
-const unsigned long CHANNEL_CHECK_INTERVAL = 10000; // Alle 10 Sekunden prüfen
-
-
+// WiFi-Kanal ist fest auf 1 eingestellt (keine automatische Anpassung mehr nötig)
 
 typedef struct struct_message {
   float temperature;
@@ -174,81 +173,6 @@ void getCCS811Readings(){     // CCS811 Luftqualität auslesen
   }
 }
 
-void checkAndUpdateChannel() {
-  // Nur prüfen wenn WiFi verbunden ist
-  if (WiFi.status() != WL_CONNECTED) {
-    return;
-  }
-  
-  uint8_t currentChannel = WiFi.channel();
-  
-  // Beim ersten Aufruf nur initialisieren
-  if (lastWifiChannel == 0) {
-    lastWifiChannel = currentChannel;
-    Serial.print("[Kanal-Monitor] Initiale Kanal-Erkennung: ");
-    Serial.println(currentChannel);
-    return;
-  }
-  
-  // Prüfe ob sich der Kanal geändert hat
-  if (currentChannel != lastWifiChannel && currentChannel != 0) {
-    Serial.println("\n======================================");
-    Serial.print("[Kanal-Wechsel] Erkannt: ");
-    Serial.print(lastWifiChannel);
-    Serial.print(" -> ");
-    Serial.println(currentChannel);
-    Serial.println("======================================");
-    
-    // ESP-NOW deinitialisieren
-    esp_now_deinit();
-    Serial.println("[ESP-NOW] Deinitialisiert");
-    
-    // Neuen Kanal setzen
-    Serial.print("[ESP-NOW] Setze neuen Kanal: ");
-    Serial.println(currentChannel);
-    esp_wifi_set_promiscuous(true);
-    esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_promiscuous(false);
-    
-    // ESP-NOW neu initialisieren
-    if (esp_now_init() == ESP_OK) {
-      Serial.println("[ESP-NOW] Neu initialisiert");
-      esp_now_register_send_cb(OnDataSent);
-      
-      // WICHTIG: Beide Peers wieder hinzufügen!
-      peerInfo.channel = currentChannel;
-      
-      // Peer 1 hinzufügen
-      memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
-      esp_err_t result1 = esp_now_add_peer(&peerInfo);
-      if (result1 == ESP_OK) {
-        Serial.println("[ESP-NOW] Peer 1 erfolgreich hinzugefügt");
-      } else {
-        Serial.print("[ESP-NOW] FEHLER beim Peer 1 hinzufügen: ");
-        Serial.println(result1);
-      }
-      
-      // Peer 2 hinzufügen
-      memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
-      esp_err_t result2 = esp_now_add_peer(&peerInfo);
-      if (result2 == ESP_OK) {
-        Serial.println("[ESP-NOW] Peer 2 erfolgreich hinzugefügt");
-      } else {
-        Serial.print("[ESP-NOW] FEHLER beim Peer 2 hinzufügen: ");
-        Serial.println(result2);
-      }
-      
-      if (result1 == ESP_OK && result2 == ESP_OK) {
-        lastWifiChannel = currentChannel;
-        Serial.println("[ESP-NOW] Erfolgreich auf neuem Kanal aktiv");
-        Serial.println("======================================\n");
-      }
-    } else {
-      Serial.println("[ESP-NOW] FEHLER bei Neuinitialisierung!");
-      Serial.println("======================================\n");
-    }
-  }
-}
 void getBME680Readings(){     //BME680 auslesen
   // Tell BME680 to begin measurement.
   unsigned long endTime = bme.beginReading();
@@ -282,31 +206,17 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   }
   Serial.println("HM330X initialized");
   
-  // WiFi im STA-Modus starten
+  // WiFi im STA-Modus starten (für ESP-NOW nötig, KEINE Netzwerk-Verbindung)
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false); // Deaktiviert Power-Save
+  WiFi.disconnect();    // Keine WiFi-Verbindung aufbauen!
   
-  // Mit Router verbinden
-  Serial.print("Verbinde mit WiFi: ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
+  // Long Range Mode aktivieren (802.11b/g/n + LR für maximale Reichweite)
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+  Serial.println("INFO: Long Range Mode aktiviert (802.11b/g/n/LR)");
   
-  int wifiTimeout = 0;
-  while (WiFi.status() != WL_CONNECTED && wifiTimeout < 40) {
-    delay(500);
-    Serial.print(".");
-    wifiTimeout++;
-  }
-  
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.println("\nWiFi verbunden!");
-    Serial.print("IP: ");
-    Serial.println(WiFi.localIP());
-    Serial.print("WiFi-Kanal (Router): ");
-    Serial.println(WiFi.channel());
-  } else {
-    Serial.println("\nWiFi-Verbindung fehlgeschlagen!");
-  }
+  // KEIN WiFi-Netzwerk mehr - direkt auf ESP-NOW Kanal 1 setzen
+  Serial.println("INFO: ESP32_Meteo_aussen arbeitet NUR mit ESP-NOW (kein WiFi-Netzwerk)");
   
   // Kanal fest auf 1 setzen für ESP-NOW
   uint8_t currentPrimaryChannel = 1;
@@ -318,6 +228,15 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   wifi_second_chan_t currentSecondChannel = WIFI_SECOND_CHAN_NONE;
   esp_wifi_get_channel(&currentPrimaryChannel, &currentSecondChannel);
   Serial.printf("ESP-NOW aktueller Kanal: %u\n", currentPrimaryChannel);
+  
+  // TX Power abfragen und auf Maximum setzen
+  int8_t power;
+  esp_wifi_get_max_tx_power(&power);
+  Serial.printf("Aktuelle TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
+  
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximale Sendeleistung
+  esp_wifi_get_max_tx_power(&power);
+  Serial.printf("Neue TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
   
   memset(&peerInfo, 0, sizeof(peerInfo));
   peerInfo.channel = currentPrimaryChannel;
@@ -377,6 +296,15 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
     return;
   }
   Serial.println("Peer 2 hinzugefügt");
+  
+  // Register peer 3 (RSSI Monitor)
+  memcpy(peerInfo.peer_addr, broadcastAddress3, 6);
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer 3 (RSSI Monitor)");
+    // Nicht kritisch - weiter machen
+  } else {
+    Serial.println("Peer 3 (RSSI Monitor) hinzugefügt");
+  }
   
   Serial.println("Setup abgeschlossen - ESP-NOW Sender bereit!");
 }
@@ -474,14 +402,7 @@ boolean parse_data() {
 }
 
 void loop() { //////////////////////////Loop/////////////////////////////////////////
- 
-  
-  
-  // Automatische WiFi-Kanal-Überwachung und Anpassung (DEAKTIVIERT - Kanal fest auf 1)
-  // if (millis() - lastChannelCheck >= CHANNEL_CHECK_INTERVAL) {
-  //   checkAndUpdateChannel();
-  //   lastChannelCheck = millis();
-  // }
+  // WiFi-Kanal ist fest auf Kanal 1 eingestellt - keine Anpassung mehr erforderlich
   
   if ((digitalRead(DATAPIN) && !INVERSE_LOGIC) or
       (!digitalRead(DATAPIN) && INVERSE_LOGIC)) {
@@ -577,6 +498,17 @@ delay(200);
   }
   else {
     Serial.println("Error sending the data");
+  }
+
+delay(200);
+  // Send message via ESP-NOW to RSSI Monitor
+  esp_err_t result2 = esp_now_send(broadcastAddress3, (uint8_t *) &myData, sizeof(myData));
+   
+  if (result2 == ESP_OK) {
+    Serial.println("Sent3 (RSSI Monitor) with success");
+  }
+  else {
+    Serial.println("Error sending to RSSI Monitor");
   }
  
  
