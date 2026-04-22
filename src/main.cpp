@@ -3,6 +3,7 @@
 #include <XPT2046_Touchscreen.h>
 #include <esp_now.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <Preferences.h>
 
 // TFT Display initialisieren
@@ -19,6 +20,9 @@ XPT2046_Touchscreen touch(TOUCH_CS, TOUCH_IRQ);
 
 
 uint8_t weatherStationMAC[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};   //Kiste schwarz
+
+// MAC-Adresse des RSSI Monitors (für parallelen Empfang)
+uint8_t rssiMonitorMAC[] = {0xB0, 0xCB, 0xD8, 0x02, 0xFD, 0x08};   //RSSI Monitor
 
 // Datenstruktur für ESP-NOW Übertragung
 typedef struct {
@@ -157,6 +161,23 @@ void initESPNow() {
   // WiFi im Station-Modus starten (für ESP-NOW erforderlich)
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  WiFi.setSleep(false);  // Power-Save deaktivieren für bessere Reichweite
+  
+  // Long Range Mode aktivieren (802.11b/g/n + LR für maximale Reichweite)
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+  Serial.println("INFO: Long Range Mode aktiviert (802.11b/g/n/LR)");
+  
+  // Kanal auf 1 setzen für ESP-NOW
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous(false);
+  Serial.println("INFO: ESP-NOW Kanal fest auf 1 gesetzt");
+  
+  // TX Power auf Maximum setzen
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  int8_t power;
+  esp_wifi_get_max_tx_power(&power);
+  Serial.printf("TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
   
   Serial.print("ESP32 MAC-Adresse: ");
   Serial.println(WiFi.macAddress());
@@ -181,28 +202,52 @@ void initESPNow() {
   peerInfo.encrypt = false;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Fehler beim Hinzufügen des Peers!");
+    Serial.println("Fehler beim Hinzufügen des Peers (Wetterstation)!");
     espnowInitialized = false;
     return;
   }
   
-  Serial.print("Peer (Wetterstation) hinzugefügt: ");
+  Serial.print("Peer 1 (Wetterstation) hinzugefügt: ");
   for (int i = 0; i < 6; i++) {
     Serial.printf("%02X", weatherStationMAC[i]);
     if (i < 5) Serial.print(":");
   }
   Serial.println();
   
-  espnowInitialized = true;
-}
-
-// Daten via ESP-NOW senden
-void sendWaterLevelData(float waterLevel, int adcValue, bool pumpActive) {
-  if (!espnowInitialized) {
-    Serial.println("ESP-NOW nicht initialisiert!");
-    return;
+  // Peer 2 (RSSI Monitor) hinzufügen
+  memset(&peerInfo, 0, sizeof(peerInfo));
+  memcpy(peerInfo.peer_addr, rssiMonitorMAC, 6);
+  peerInfo.channel = 0;
+  peerInfo.encrypt = false;
+  
+  if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+    Serial.println("Warnung: Fehler beim Hinzufügen des RSSI Monitors!");
+    // Nicht kritisch - weiter machen
+  } else {
+    Serial.print("Peer 2 (RSSI Monitor) hinzugefügt: ");
+    for (int i = 0; i < 6; i++) {
+      Serial.printf("%02X", rssiMonitorMAC[i]);
+      if (i < 5) Serial.print(":");
+    }
+    Serial.println();
   }
   
+  espnowInian Wetterstation senden
+  esp_err_t result1 = esp_now_send(weatherStationMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
+  
+  // Daten an RSSI Monitor senden
+  esp_err_t result2 = esp_now_send(rssiMonitorMAC, (uint8_t *)&dataToSend, sizeof(dataToSend));
+  
+  if (result1 == ESP_OK || result2 == ESP_OK) {
+    espnowSendCount++;
+    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s, RefZeit: %lu s, Letzter Lauf: %lu s)\n", 
+                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS",
+                  pumpAlarmActive ? "JA" : "NEIN", pumpReferenceTime, lastPumpDuration);
+    Serial.printf("  → Wetterstation: %s | RSSI Monitor: %s\n", 
+                  result1 == ESP_OK ? "OK" : "FEHLER",
+                  result2 == ESP_OK ? "OK" : "FEHLER");
+  } else {
+    Serial.println("ESP-NOW: Fehler beim Senden an beide Peers
   // Datenstruktur füllen
   dataToSend.waterLevel = waterLevel;
   dataToSend.adcValue = adcValue;
