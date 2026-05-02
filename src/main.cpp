@@ -149,10 +149,8 @@ unsigned long lastAlarmBlink = 0;    // Zeitpunkt letztes Blinken
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   if (status == ESP_NOW_SEND_SUCCESS) {
     lastSendSuccess = true;
-    Serial.println("ESP-NOW: Daten erfolgreich gesendet!");
   } else {
     lastSendSuccess = false;
-    Serial.println("ESP-NOW: Fehler beim Senden!");
   }
 }
 
@@ -165,22 +163,14 @@ void initESPNow() {
   
   // Long Range Mode aktivieren (802.11b/g/n + LR für maximale Reichweite)
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
-  Serial.println("INFO: Long Range Mode aktiviert (802.11b/g/n/LR)");
   
   // Kanal auf 1 setzen für ESP-NOW
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
-  Serial.println("INFO: ESP-NOW Kanal fest auf 1 gesetzt");
   
   // TX Power auf Maximum setzen
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  int8_t power;
-  esp_wifi_get_max_tx_power(&power);
-  Serial.printf("TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
-  
-  Serial.print("ESP32 MAC-Adresse: ");
-  Serial.println(WiFi.macAddress());
   
   // ESP-NOW initialisieren
   if (esp_now_init() != ESP_OK) {
@@ -188,8 +178,6 @@ void initESPNow() {
     espnowInitialized = false;
     return;
   }
-  
-  Serial.println("ESP-NOW erfolgreich initialisiert");
   
   // Callback-Funktion registrieren
   esp_now_register_send_cb(OnDataSent);
@@ -207,13 +195,6 @@ void initESPNow() {
     return;
   }
   
-  Serial.print("Peer 1 (Wetterstation) hinzugefügt: ");
-  for (int i = 0; i < 6; i++) {
-    Serial.printf("%02X", weatherStationMAC[i]);
-    if (i < 5) Serial.print(":");
-  }
-  Serial.println();
-  
   // Peer 2 (RSSI Monitor) hinzufügen
   memset(&peerInfo, 0, sizeof(peerInfo));
   memcpy(peerInfo.peer_addr, rssiMonitorMAC, 6);
@@ -221,15 +202,7 @@ void initESPNow() {
   peerInfo.encrypt = false;
   
   if (esp_now_add_peer(&peerInfo) != ESP_OK) {
-    Serial.println("Warnung: Fehler beim Hinzufügen des RSSI Monitors!");
     // Nicht kritisch - weiter machen
-  } else {
-    Serial.print("Peer 2 (RSSI Monitor) hinzugefügt: ");
-    for (int i = 0; i < 6; i++) {
-      Serial.printf("%02X", rssiMonitorMAC[i]);
-      if (i < 5) Serial.print(":");
-    }
-    Serial.println();
   }
   
   espnowInian Wetterstation senden
@@ -240,14 +213,6 @@ void initESPNow() {
   
   if (result1 == ESP_OK || result2 == ESP_OK) {
     espnowSendCount++;
-    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s, RefZeit: %lu s, Letzter Lauf: %lu s)\n", 
-                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS",
-                  pumpAlarmActive ? "JA" : "NEIN", pumpReferenceTime, lastPumpDuration);
-    Serial.printf("  → Wetterstation: %s | RSSI Monitor: %s\n", 
-                  result1 == ESP_OK ? "OK" : "FEHLER",
-                  result2 == ESP_OK ? "OK" : "FEHLER");
-  } else {
-    Serial.println("ESP-NOW: Fehler beim Senden an beide Peers
   // Datenstruktur füllen
   dataToSend.waterLevel = waterLevel;
   dataToSend.adcValue = adcValue;
@@ -261,11 +226,6 @@ void initESPNow() {
   
   if (result == ESP_OK) {
     espnowSendCount++;
-    Serial.printf("ESP-NOW: Sende Daten #%d (%.1f cm, ADC: %d, Pumpe: %s, Alarm: %s, RefZeit: %lu s, Letzter Lauf: %lu s)\n", 
-                  espnowSendCount, waterLevel, adcValue, pumpActive ? "EIN" : "AUS",
-                  pumpAlarmActive ? "JA" : "NEIN", pumpReferenceTime, lastPumpDuration);
-  } else {
-    Serial.println("ESP-NOW: Fehler beim Senden!");
   }
 }
 
@@ -577,15 +537,7 @@ void touchCalibrationMode() {
     tft.setTextColor(TFT_YELLOW, TFT_BLACK);
     tft.printf("Button: X=%d-%d Y=%d-%d", BUTTON_X, BUTTON_X+BUTTON_W, BUTTON_Y, BUTTON_Y+BUTTON_H);
     
-    // Serielle Ausgabe
-    Serial.printf("RAW: x=%d, y=%d, z=%d -> MAPPED: x=%d, y=%d", 
-                  p.x, p.y, p.z, displayX, displayY);
-    if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
-        displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
-      Serial.println(" [IM BUTTON!]");
-    } else {
-      Serial.println();
-    }
+
     
     lastTouchX = displayX;
     lastTouchY = displayY;
@@ -609,16 +561,11 @@ void checkTouchButton() {
     displayX = constrain(displayX, 0, 480);
     displayY = constrain(displayY, 0, 320);
     
-    Serial.printf("Touch: x=%d, y=%d\n", displayX, displayY);
-    
     // Seitenwechsel-Button prüfen (unterschiedliche Position je Seite)
     int btnX = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_X : PAGE_BTN_SETUP_X;
     int btnY = (currentPage == PAGE_MAIN) ? PAGE_BTN_MAIN_Y : PAGE_BTN_SETUP_Y;
-    Serial.printf("Page-Button: X=%d-%d, Y=%d-%d\n", btnX, btnX+PAGE_BTN_W, btnY, btnY+PAGE_BTN_H);
     if (displayX >= btnX && displayX <= (btnX + PAGE_BTN_W) &&
         displayY >= btnY && displayY <= (btnY + PAGE_BTN_H)) {
-      
-      Serial.println(">>> SEITENWECHSEL ERKANNT! <<<");
       currentPage = (currentPage == PAGE_MAIN) ? PAGE_SETTINGS : PAGE_MAIN;
       
       // Seite komplett neu zeichnen
@@ -644,21 +591,16 @@ void checkTouchButton() {
       if (displayX >= BUTTON_X && displayX <= (BUTTON_X + BUTTON_W) &&
           displayY >= BUTTON_Y && displayY <= (BUTTON_Y + BUTTON_H)) {
         
-        Serial.println("Pumpenmodus-Button!");
-        
         // Modus umschalten
         switch (pumpMode) {
           case MODE_AUTO:
             pumpMode = MODE_MANUAL_ON;
-            Serial.println(">>> PUMPE MANUELL EIN <<<");
             break;
           case MODE_MANUAL_ON:
             pumpMode = MODE_MANUAL_OFF;
-            Serial.println(">>> PUMPE MANUELL AUS <<<");
             break;
           case MODE_MANUAL_OFF:
             pumpMode = MODE_AUTO;
-            Serial.println(">>> PUMPE AUTO-MODUS <<<");
             break;
         }
         
@@ -693,7 +635,6 @@ void checkTouchButton() {
         }
         
         drawSlider(1, pumpOnLevel, "EIN:");
-        Serial.printf("Slider EIN: %.1f cm\n", pumpOnLevel);
       }
       
       // Slider 2 (AUS-Level)
@@ -714,7 +655,6 @@ void checkTouchButton() {
         }
         
         drawSlider(2, pumpOffLevel, "AUS:");
-        Serial.printf("Slider AUS: %.1f cm\n", pumpOffLevel);
       }
       
       // Während Dragging: Position kontinuierlich aktualisieren
@@ -753,9 +693,6 @@ void checkTouchButton() {
         preferences.putFloat("onLevel", pumpOnLevel);
         preferences.putFloat("offLevel", pumpOffLevel);
         preferences.end();
-        
-        Serial.printf("Schwellwerte gespeichert: EIN=%.1f cm, AUS=%.1f cm\n", 
-                     pumpOnLevel, pumpOffLevel);
       }
     }
   }
@@ -768,15 +705,12 @@ void checkTouchButton() {
       switch (pumpMode) {
         case MODE_AUTO:
           pumpMode = MODE_MANUAL_ON;
-          Serial.println(">>> PUMPE MANUELL EIN <<<");
           break;
         case MODE_MANUAL_ON:
           pumpMode = MODE_MANUAL_OFF;
-          Serial.println(">>> PUMPE MANUELL AUS <<<");
           break;
         case MODE_MANUAL_OFF:
           pumpMode = MODE_AUTO;
-          Serial.println(">>> PUMPE AUTO-MODUS <<<");
           break;
       }
       drawPumpModeButton();
@@ -787,7 +721,6 @@ void checkTouchButton() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Zisternen-Monitor gestartet...");
   
   // ADC-Pin konfigurieren
   pinMode(PRESSURE_SENSOR_PIN, INPUT);
@@ -797,12 +730,10 @@ void setup() {
   // Pumpen-MOSFET konfigurieren
   pinMode(PUMP_MOSFET_PIN, OUTPUT);
   digitalWrite(PUMP_MOSFET_PIN, LOW); // Pumpe initial AUS
-  Serial.printf("Pumpen-MOSFET konfiguriert auf GPIO %d (OUTPUT, initial LOW)\n", PUMP_MOSFET_PIN);
   
   // Luftpumpen-MOSFET konfigurieren
   pinMode(AIR_PUMP_PIN, OUTPUT);
   digitalWrite(AIR_PUMP_PIN, LOW); // Luftpumpe initial AUS
-  Serial.printf("Luftpumpen-MOSFET konfiguriert auf GPIO %d (OUTPUT, initial LOW)\n", AIR_PUMP_PIN);
   
   // ESP-NOW initialisieren
   initESPNow();
@@ -813,39 +744,24 @@ void setup() {
   pumpRunCount = preferences.getInt("runCount", 0);
   preferences.end();
   
-  if (pumpReferenceTime > 0) {
-    Serial.printf("Gespeicherte Referenzzeit geladen: %lu Sekunden\n", pumpReferenceTime);
-    Serial.printf("Anzahl Messungen: %d\n", pumpRunCount);
-  } else {
-    Serial.println("Keine Referenzzeit gespeichert - Lernphase startet (3 Messungen benötigt)");
-  };
-  
   // Pumpen-Schwellwerte laden
   preferences.begin("pumpSettings", true); // readonly
   pumpOnLevel = preferences.getFloat("onLevel", 30.0);
   pumpOffLevel = preferences.getFloat("offLevel", 15.0);
   preferences.end();
-  Serial.printf("Schwellwerte geladen: EIN=%.1f cm, AUS=%.1f cm\n", pumpOnLevel, pumpOffLevel);
   
   // SPI Bus mit custom Pins initialisieren (MUSS vor Display UND Touch erfolgen!)
   // Diese Pins müssen mit platformio.ini übereinstimmen
   SPI.begin(14, 12, 13, -1); // SCK=14, MISO=12, MOSI=13, SS=-1 (nicht verwendet)
-  Serial.println("SPI initialisiert: SCK=14, MISO=12, MOSI=13");
   
   // Display initialisieren (verwendet bereits initialisierten SPI-Bus)
   tft.init();
   tft.setRotation(1); // Landscape-Modus (0-3 möglich)
-  Serial.println("TFT Display initialisiert");
   
   // Touch-Controller initialisieren (verwendet bereits initialisierten SPI-Bus)
   #if TOUCH_ENABLED
   touch.begin(); // Verwendet jetzt den bereits initialisierten SPI-Bus
   touch.setRotation(1); // Gleiche Rotation wie Display
-  Serial.println("XPT2046 Touch initialisiert");
-  Serial.printf("Touch: CS=%d, IRQ=%d\\n", TOUCH_CS, TOUCH_IRQ);
-  Serial.println("Tippen Sie auf den Button, um den Modus zu wechseln");
-  #else
-  Serial.println("Touch deaktiviert - Sende 'M' über Serial zum Umschalten");
   #endif
   
   // Backlight einschalten
@@ -862,14 +778,10 @@ void setup() {
   
 #if TOUCH_CALIBRATION_MODE
   // Kalibrierungsmodus - minimale Anzeige
-  Serial.println("*** TOUCH KALIBRIERUNGSMODUS AKTIV ***");
-  Serial.println("*** Setze TOUCH_CALIBRATION_MODE auf false nach Kalibrierung ***");
 #else
   // Hauptseite initial zeichnen
   drawMainPage();
 #endif
-  
-  Serial.println("Display initialisiert!");
 }
 
 void loop() {
@@ -916,14 +828,12 @@ void loop() {
     airPumpStartTime = currentTime;
     lastAirPumpTime = currentTime;
     digitalWrite(AIR_PUMP_PIN, HIGH);
-    Serial.println(">>> LUFTPUMPE GESTARTET (Druckausgleich) <<<");
   }
   
   // Luftpumpe nach 10 Sekunden ausschalten
   if (airPumpActive && (currentTime - airPumpStartTime >= AIR_PUMP_DURATION)) {
     airPumpActive = false;
     digitalWrite(AIR_PUMP_PIN, LOW);
-    Serial.println(">>> LUFTPUMPE GESTOPPT <<<");
   }
   
   // Messung überspringen, wenn Luftpumpe aktiv ist
@@ -957,11 +867,6 @@ void loop() {
         pumpActive = true;
         pumpStartTime = millis(); // Timer starten
         digitalWrite(PUMP_MOSFET_PIN, HIGH);
-        Serial.println(">>> PUMPE EINGESCHALTET (AUTO) <<<");
-        Serial.printf(">>> GPIO %d auf HIGH gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
-        Serial.printf(">>> Timer gestartet: %lu ms <<<\n", pumpStartTime);
-        int pinState = digitalRead(PUMP_MOSFET_PIN);
-        Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
       }
       else if (waterLevelCm <= pumpOffLevel && pumpActive) {
         // Pumpe ausschalten bei <= pumpOffLevel cm
@@ -971,48 +876,35 @@ void loop() {
         // Laufzeit berechnen (nur im AUTO-Modus für Überwachung)
         unsigned long pumpRunTime = (millis() - pumpStartTime) / 1000; // in Sekunden
         lastPumpDuration = pumpRunTime; // Letzte Laufzeit speichern für ESP-NOW
-        Serial.println(">>> PUMPE AUSGESCHALTET (AUTO) <<<");
-        Serial.printf(">>> GPIO %d auf LOW gesetzt (Wasserstand: %.1f cm) <<<\n", PUMP_MOSFET_PIN, waterLevelCm);
-        Serial.printf(">>> Laufzeit: %lu Sekunden <<<\n", pumpRunTime);
         
         // Lernphase: Erste 3 Messungen speichern
         if (pumpRunCount < 3) {
           pumpRunTimes[pumpRunCount] = pumpRunTime;
           pumpRunCount++;
-          Serial.printf(">>> Lernphase: Messung %d/3 gespeichert <<<\n", pumpRunCount);
           
           // Nach 3 Messungen: Mittelwert berechnen und speichern
           if (pumpRunCount == 3) {
             pumpReferenceTime = (pumpRunTimes[0] + pumpRunTimes[1] + pumpRunTimes[2]) / 3;
-            Serial.printf(">>> Referenzzeit berechnet: %lu Sekunden (Mittelwert aus %lu, %lu, %lu) <<<\n", 
-                         pumpReferenceTime, pumpRunTimes[0], pumpRunTimes[1], pumpRunTimes[2]);
             
             // Dauerhaft speichern
             preferences.begin("pumpMonitor", false);
             preferences.putULong("refTime", pumpReferenceTime);
             preferences.putInt("runCount", pumpRunCount);
             preferences.end();
-            Serial.println(">>> Referenzzeit dauerhaft gespeichert <<<");
           }
         }
         // Überwachungsphase: Überprüfen ob Referenzzeit überschritten
         else if (pumpReferenceTime > 0) {
           unsigned long maxAllowedTime = (unsigned long)(pumpReferenceTime * PUMP_ALARM_THRESHOLD);
-          Serial.printf(">>> Überwachung: Laufzeit %lu s vs. Max erlaubt %lu s (%.0f%% von %lu s) <<<\n", 
-                       pumpRunTime, maxAllowedTime, PUMP_ALARM_THRESHOLD * 100, pumpReferenceTime);
           
           if (pumpRunTime > maxAllowedTime) {
             // Alarm aktivieren
             bool wasAlarmActive = pumpAlarmActive; // Vorheriger Status
             pumpAlarmActive = true;
-            Serial.println("!!! ALARM: Pumpenlaufzeit überschritten !!!");
-            Serial.printf("!!! %lu s > %lu s (%.0f%% von Referenz) !!!\n", 
-                         pumpRunTime, maxAllowedTime, PUMP_ALARM_THRESHOLD * 100);
             
             // Sofort ESP-NOW Alarm senden (nur beim ersten Mal)
             if (!wasAlarmActive && espnowInitialized) {
               sendWaterLevelData(waterLevelCm, adcValue, pumpActive);
-              Serial.println(">>> ESP-NOW Alarm-Meldung sofort gesendet <<<");
             }
           } else {
             pumpAlarmActive = false;
@@ -1027,11 +919,6 @@ void loop() {
         pumpActive = true;
         pumpStartTime = millis(); // Timer auch im Manuell-Modus starten (für Info)
         digitalWrite(PUMP_MOSFET_PIN, HIGH);
-        Serial.println(">>> PUMPE EINGESCHALTET (MANUELL) <<<");
-        Serial.printf(">>> GPIO %d auf HIGH gesetzt <<<\n", PUMP_MOSFET_PIN);
-        // Pin-Status überprüfen
-        int pinState = digitalRead(PUMP_MOSFET_PIN);
-        Serial.printf(">>> GPIO %d Status: %d (sollte 1 sein) <<<\n", PUMP_MOSFET_PIN, pinState);
       }
       // Im Manuell-Modus läuft die Pumpe weiter bis Button gedrückt wird
       break;
@@ -1041,8 +928,6 @@ void loop() {
       if (pumpActive) {
         pumpActive = false;
         digitalWrite(PUMP_MOSFET_PIN, LOW);
-        Serial.println(">>> PUMPE AUSGESCHALTET (MANUELL) <<<");
-        Serial.printf(">>> GPIO %d auf LOW gesetzt <<<\n", PUMP_MOSFET_PIN);
       }
       break;
   }
