@@ -26,9 +26,11 @@ Tomoto_HM330X sensor; //Luft Partikel
 DFRobot_RainfallSensor_I2C regen_Tic (&Wire); //RegenSensor
 Adafruit_CCS811 ccs; //Luftqualität eCO2 und TVOC
 
+// MAC-Adresse des Hauptempfängers (Cisterne_ESP_NOW_Receiver)
 uint8_t broadcastAddress1[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
 
-uint8_t broadcastAddress2[] = {0x4C, 0xC3, 0x82, 0xC4, 0xDC, 0xEC};
+// MAC-Adresse des Backup-Empfängers (gleicher Receiver, für Redundanz)
+uint8_t broadcastAddress2[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
 
 // MAC-Adresse des RSSI Monitors
 uint8_t broadcastAddress3[] = {0xB0, 0xCB, 0xD8, 0x02, 0xFD, 0x08};
@@ -83,14 +85,7 @@ void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
 */
 
 void OnDataSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
-  char macStr[18];
-  Serial.print("Packet to: ");
-  // Copies the sender mac address to a string
-  snprintf(macStr, sizeof(macStr), "%02x:%02x:%02x:%02x:%02x:%02x",
-           mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-  Serial.print(macStr);
-  Serial.print(" send status:\t");
-  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+  // Callback - keine Ausgabe
 }
 
 Adafruit_BME680 bme; // I2C
@@ -131,7 +126,7 @@ unsigned long timerDelay = 1000;  // send readings timer
 void getSensorReadings(){         //Staubsensor auslesen HM3301
 
   if (!sensor.readSensor()) {
-    Serial.println("Failed to read HM330X");
+    // Read failed - ignore
   } else {
     
     std_PM1 = sensor.std.getPM1();      //Staubsensorwerte standard particlate matter (ug/m^3) --")
@@ -162,7 +157,6 @@ void getCCS811Readings(){     // CCS811 Luftqualität auslesen
       eco2 = ccs.geteCO2();
       tvoc = ccs.getTVOC();
     } else {
-      Serial.println("CCS811 Lesefehler");
       eco2 = 0;
       tvoc = 0;
     }
@@ -177,11 +171,9 @@ void getBME680Readings(){     //BME680 auslesen
   // Tell BME680 to begin measurement.
   unsigned long endTime = bme.beginReading();
   if (endTime == 0) {
-    Serial.println(F("Failed to begin reading :("));
     return;
   }
   if (!bme.endReading()) {
-    Serial.println(F("Failed to complete reading :("));
     return;
   }
   temperature = bme.temperature - 10.0;  // Korrektur: Gas-Heater erwärmt Sensor um ~10°C
@@ -196,15 +188,12 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(DATAPIN, INPUT);
-  Serial.println("starting, direction in ddeg, speed in dm/s");
   last_event_time_ms = millis();
   
   // Staubsensor initialisieren
   if (!sensor.begin()) {
-    Serial.println("Failed to initialize HM330X");
     while (1);
   }
-  Serial.println("HM330X initialized");
   
   // WiFi im STA-Modus starten (für ESP-NOW nötig, KEINE Netzwerk-Verbindung)
   WiFi.mode(WIFI_STA);
@@ -213,30 +202,18 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   
   // Long Range Mode aktivieren (802.11b/g/n + LR für maximale Reichweite)
   esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
-  Serial.println("INFO: Long Range Mode aktiviert (802.11b/g/n/LR)");
-  
-  // KEIN WiFi-Netzwerk mehr - direkt auf ESP-NOW Kanal 1 setzen
-  Serial.println("INFO: ESP32_Meteo_aussen arbeitet NUR mit ESP-NOW (kein WiFi-Netzwerk)");
   
   // Kanal fest auf 1 setzen für ESP-NOW
   uint8_t currentPrimaryChannel = 1;
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_channel(currentPrimaryChannel, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
-  Serial.println("INFO: ESP-NOW Kanal fest auf 1 gesetzt");
   
   wifi_second_chan_t currentSecondChannel = WIFI_SECOND_CHAN_NONE;
   esp_wifi_get_channel(&currentPrimaryChannel, &currentSecondChannel);
-  Serial.printf("ESP-NOW aktueller Kanal: %u\n", currentPrimaryChannel);
   
-  // TX Power abfragen und auf Maximum setzen
-  int8_t power;
-  esp_wifi_get_max_tx_power(&power);
-  Serial.printf("Aktuelle TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
-  
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // Maximale Sendeleistung
-  esp_wifi_get_max_tx_power(&power);
-  Serial.printf("Neue TX Power: %d (= %.1f dBm)\n", power, power * 0.25);
+  // TX Power auf Maximum setzen
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
   
   memset(&peerInfo, 0, sizeof(peerInfo));
   peerInfo.channel = currentPrimaryChannel;
@@ -251,14 +228,11 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   
   // I2C Bus initialisieren (wichtig für BME680!)
   Wire.begin();
-  Serial.println("I2C initialisiert");
   
   // Init BME680 sensor
   if (!bme.begin()) {
-    Serial.println(F("Could not find a valid BME680 sensor, check wiring!"));
     while (1);
   }
-  Serial.println("BME680 gefunden und initialisiert");
   // Set up oversampling and filter initialization
   bme.setTemperatureOversampling(BME680_OS_8X);
   bme.setHumidityOversampling(BME680_OS_2X);
@@ -268,10 +242,8 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   
   // Init CCS811 sensor
   if(!ccs.begin()){
-    Serial.println("CCS811 nicht gefunden! Bitte Verdrahtung prüfen.");
     // Kein while(1) - System läuft auch ohne CCS811 weiter
   } else {
-    Serial.println("CCS811 gefunden und initialisiert");
     // Warte bis Sensor bereit ist
     while(!ccs.available()){
       delay(100);
@@ -287,7 +259,6 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
     Serial.println("Failed to add peer 1");
     return;
   }
-  Serial.println("Peer 1 hinzugefügt");
   
   // Register peer 2
   memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
@@ -295,18 +266,12 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
     Serial.println("Failed to add peer 2");
     return;
   }
-  Serial.println("Peer 2 hinzugefügt");
   
   // Register peer 3 (RSSI Monitor)
   memcpy(peerInfo.peer_addr, broadcastAddress3, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    Serial.println("Failed to add peer 3 (RSSI Monitor)");
     // Nicht kritisch - weiter machen
-  } else {
-    Serial.println("Peer 3 (RSSI Monitor) hinzugefügt");
   }
-  
-  Serial.println("Setup abgeschlossen - ESP-NOW Sender bereit!");
 }
  
 
@@ -411,19 +376,16 @@ void loop() { //////////////////////////Loop////////////////////////////////////
     char a[90];
     boolean validData = parse_data();
     if (!validData) {
-      Serial.println("fail,could not parse data");
-      // delay(1000); // ENTFERNT - blockierte die gesamte Loop!
+      // fail - ignore
     } else {
       digitalWrite(LED_BUILTIN, HIGH);
       sprintf(a, "ok,%d,%d", wind_dir, wind_speed);
-      Serial.println(a);
       digitalWrite(LED_BUILTIN, LOW);
     }
     delay(10);  // to prevent getting triggered again
     last_event_time_ms = millis();
   }
   if (millis() - last_event_time_ms >= NO_DATA_TIMEOUT_MS) {
-    Serial.println("fail,timout");
     last_event_time_ms = millis();
   }
  
@@ -434,24 +396,6 @@ void loop() { //////////////////////////Loop////////////////////////////////////
     getSensorReadings();
     getBME680Readings();
     getCCS811Readings();
-    Serial.printf("Temperature = %.2f ºC \n", temperature);
-    Serial.printf("Humidity = %.2f %% \n", humidity);
-    Serial.printf("Pressure = %.2f hPa \n", pressure);
-    Serial.printf("Gas Resistance = %.2f KOhm \n", gasResistance);
-    Serial.printf("Wind_Speed = %.2u Kmh \n", wind_speed);
-    Serial.printf("Wind_Direction = %.2u Grad \n", wind_dir);
-    
-    Serial.printf("standard particlate matter 1.0 (ug/m^3) = %.2f ug/m^3\n", std_PM1);
-    Serial.printf("standard particlate matter 2.5 (ug/m^3) = %.2f ug/m^3\n", std_PM2_5);
-    Serial.printf("standard particlate matter 10 (ug/m^3) = %.2f ug/m^3\n", std_PM10);
-    Serial.println();
-    Serial.printf("atmospheric environment (ug/m^3) = %.2f ug/m^3\n", atm_PM1);
-    Serial.printf("atmospheric environment 2.5 (ug/m^3) = %.2f ug/m^3\n", atm_PM2_5);
-    Serial.printf("atmospheric environment 10 (ug/m^3) = %.2f ug/m^3\n", atm_PM10);
-    Serial.println();
-    Serial.printf("eCO2 = %u ppm\n", eco2);
-    Serial.printf("TVOC = %u ppb\n", tvoc);
-    Serial.println();
     
     
     
@@ -481,35 +425,14 @@ myData.tvoc = tvoc;
 
   // Send message via ESP-NOW
   esp_err_t result = esp_now_send(broadcastAddress1, (uint8_t *) &myData, sizeof(myData));
-   
-  if (result == ESP_OK) {
-    Serial.println("Sent1 with success");
-  }
-  else {
-    Serial.println("Error sending the data");
-  }
 
 delay(200);
   // Send message via ESP-NOW
   esp_err_t result1 = esp_now_send(broadcastAddress2, (uint8_t *) &myData, sizeof(myData));
-   
-  if (result1 == ESP_OK) {
-    Serial.println("Sent2 with success");
-  }
-  else {
-    Serial.println("Error sending the data");
-  }
 
 delay(200);
   // Send message via ESP-NOW to RSSI Monitor
   esp_err_t result2 = esp_now_send(broadcastAddress3, (uint8_t *) &myData, sizeof(myData));
-   
-  if (result2 == ESP_OK) {
-    Serial.println("Sent3 (RSSI Monitor) with success");
-  }
-  else {
-    Serial.println("Error sending to RSSI Monitor");
-  }
  
  
  
