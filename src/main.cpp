@@ -26,14 +26,14 @@ Tomoto_HM330X sensor; //Luft Partikel
 DFRobot_RainfallSensor_I2C regen_Tic (&Wire); //RegenSensor
 Adafruit_CCS811 ccs; //Luftqualität eCO2 und TVOC
 
-// MAC-Adresse des Hauptempfängers (Cisterne_ESP_NOW_Receiver)
-uint8_t broadcastAddress1[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
+// Eigene MAC-Adresse: B4:BF:E9:14:31:E8
+// WiFi-Kanal: fest auf 1 eingestellt
 
-// MAC-Adresse des Backup-Empfängers (gleicher Receiver, für Redundanz)
-uint8_t broadcastAddress2[] = {0x14, 0x33, 0x5C, 0x38, 0xD5, 0xD4};
+// MAC-Adresse des Empfängers Innen
+uint8_t broadcastAddress1[] = {0x1C, 0xC3, 0xAB, 0xC4, 0x33, 0x1C};
 
 // MAC-Adresse des RSSI Monitors
-uint8_t broadcastAddress3[] = {0xB0, 0xCB, 0xD8, 0x02, 0xFD, 0x08};
+uint8_t broadcastAddress2[] = {0xB0, 0xCB, 0xD8, 0x02, 0xFD, 0x08}; //TFT RSSI
 
 // Replace with your network credentials
 // WiFi-Kanal ist fest auf 1 eingestellt (keine automatische Anpassung mehr nötig)
@@ -200,8 +200,22 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   WiFi.setSleep(false); // Deaktiviert Power-Save
   WiFi.disconnect();    // Keine WiFi-Verbindung aufbauen!
   
-  // Long Range Mode aktivieren (802.11b/g/n + LR für maximale Reichweite)
-  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+  // MAC-Adresse dieses ESP32 anzeigen
+  Serial.print("ESP32 MAC-Adresse: ");
+  Serial.println(WiFi.macAddress());
+  
+  // Externe Antenne für ESP32-WROOM-32U aktivieren (U.FL-Anschluss)
+  // ANT1 = externe Antenne, ANT0 = interne PCB-Antenne
+  wifi_ant_config_t ant_config;
+  ant_config.rx_ant_mode = WIFI_ANT_MODE_ANT1;      // Externe Antenne für Empfang
+  ant_config.rx_ant_default = WIFI_ANT_ANT1;        // Standard: externe Antenne
+  ant_config.tx_ant_mode = WIFI_ANT_MODE_ANT1;      // Externe Antenne für Senden
+  ant_config.enabled_ant0 = 0;                       // Interne Antenne deaktiviert
+  ant_config.enabled_ant1 = 1;                       // Externe Antenne aktiviert
+  esp_wifi_set_ant(&ant_config);
+  
+  // Standard WiFi-Protokolle (802.11b/g/n) für maximale Kompatibilität
+  esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
   
   // Kanal fest auf 1 setzen für ESP-NOW
   uint8_t currentPrimaryChannel = 1;
@@ -253,24 +267,18 @@ void setup() {    //////////////////////SETUP///////////////////////////////////
   // Register send callback
   esp_now_register_send_cb(OnDataSent);
   
-  // Register peer 1
+  // Register peer 1 (Empfänger Innen)
   memcpy(peerInfo.peer_addr, broadcastAddress1, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK){
     Serial.println("Failed to add peer 1");
     return;
   }
   
-  // Register peer 2
+  // Register peer 2 (RSSI Monitor)
   memcpy(peerInfo.peer_addr, broadcastAddress2, 6);
   if (esp_now_add_peer(&peerInfo) != ESP_OK){
     Serial.println("Failed to add peer 2");
     return;
-  }
-  
-  // Register peer 3 (RSSI Monitor)
-  memcpy(peerInfo.peer_addr, broadcastAddress3, 6);
-  if (esp_now_add_peer(&peerInfo) != ESP_OK){
-    // Nicht kritisch - weiter machen
   }
 }
  
@@ -423,16 +431,13 @@ myData.rawData = rawData;
 myData.eco2 = eco2;
 myData.tvoc = tvoc;
 
-  // Send message via ESP-NOW
+  // Send message via ESP-NOW to Empfänger Innen
   esp_err_t result = esp_now_send(broadcastAddress1, (uint8_t *) &myData, sizeof(myData));
 
-delay(200);
-  // Send message via ESP-NOW
-  esp_err_t result1 = esp_now_send(broadcastAddress2, (uint8_t *) &myData, sizeof(myData));
-
-delay(200);
+  delay(200);
+  
   // Send message via ESP-NOW to RSSI Monitor
-  esp_err_t result2 = esp_now_send(broadcastAddress3, (uint8_t *) &myData, sizeof(myData));
+  esp_err_t result2 = esp_now_send(broadcastAddress2, (uint8_t *) &myData, sizeof(myData));
  
  
  
